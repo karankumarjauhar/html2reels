@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <!-- Studio Obsidian Background -->
+    <radialGradient id="bgGlow" cx="50%" cy="42%" r="68%">
+      <stop offset="0%" stop-color="#202644"/>
+      <stop offset="55%" stop-color="#101320"/>
+      <stop offset="100%" stop-color="#07090F"/>
+    </radialGradient>
+
+    <!-- Ambient Corner Accent Glows -->
+    <radialGradient id="indigoAura" cx="30%" cy="32%" r="45%">
+      <stop offset="0%" stop-color="#6366F1" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coralAura" cx="72%" cy="68%" r="45%">
+      <stop offset="0%" stop-color="#F43F5E" stop-opacity="0.26"/>
+      <stop offset="100%" stop-color="#F43F5E" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 9:16 Reel Frame Surface & Border -->
+    <linearGradient id="reelCardBg" x1="340" y1="240" x2="684" y2="784" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#202742" stop-opacity="0.97"/>
+      <stop offset="50%" stop-color="#14192B" stop-opacity="0.98"/>
+      <stop offset="100%" stop-color="#0D101C" stop-opacity="0.99"/>
+    </linearGradient>
+    <linearGradient id="reelBorderGrad" x1="355" y1="255" x2="669" y2="769" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.80"/>
+      <stop offset="48%" stop-color="#818CF8" stop-opacity="0.48"/>
+      <stop offset="100%" stop-color="#FB7185" stop-opacity="0.78"/>
+    </linearGradient>
+
+    <!-- Code Bracket Gradient (Cyan -> Indigo) -->
+    <linearGradient id="codeGrad" x1="382" y1="430" x2="458" y2="590" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+
+    <!-- Play Reel Gradient (Coral -> Amber) -->
+    <linearGradient id="playGrad" x1="538" y1="426" x2="646" y2="592" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FB7185"/>
+      <stop offset="48%" stop-color="#F43F5E"/>
+      <stop offset="100%" stop-color="#FB923C"/>
+    </linearGradient>
+
+    <!-- Progress Scrub Bar Gradient -->
+    <linearGradient id="scrubGrad" x1="392" y1="704" x2="632" y2="704" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="50%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#FB923C"/>
+    </linearGradient>
+
+    <!-- Soft Drop Shadow for Hero Reel Card -->
+    <filter id="cardShadow" x="250" y="190" width="524" height="670" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#030408" flood-opacity="0.78"/>
+    </filter>
+
+    <!-- Subtle Glow for Center Emblem -->
+    <filter id="emblemGlow" x="340" y="380" width="350" height="260" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- Full Bleed Background -->
+  <rect width="1024" height="1024" fill="url(#bgGlow)"/>
+  <rect width="1024" height="1024" fill="url(#indigoAura)"/>
+  <rect width="1024" height="1024" fill="url(#coralAura)"/>
+
+  <!-- Subtle Geometric Studio Grid Rings -->
+  <circle cx="512" cy="512" r="356" stroke="#94A3B8" stroke-opacity="0.065" stroke-width="1.5"/>
+  <circle cx="512" cy="512" r="290" stroke="#94A3B8" stroke-opacity="0.055" stroke-width="1.5" stroke-dasharray="6 10"/>
+
+  <!-- Back Secondary Frame Layer (Sequential frame depth, kept inside adaptive safe zone) -->
+  <rect x="366" y="268" width="314" height="492" rx="44"
+        transform="rotate(5.5 523 514)"
+        fill="#1A213A" fill-opacity="0.50"
+        stroke="#6366F1" stroke-opacity="0.26" stroke-width="2"/>
+
+  <!-- Primary 9:16 Vertical Reel Frame (100% inside 61% circular adaptive icon safe zone) -->
+  <g filter="url(#cardShadow)">
+    <rect x="357" y="260" width="310" height="504" rx="44" fill="url(#reelCardBg)"/>
+    <rect x="358.5" y="261.5" width="307" height="501" rx="42.5" stroke="url(#reelBorderGrad)" stroke-width="3"/>
+  </g>
+
+  <!-- Top Header Accents inside Frame -->
+  <rect x="392" y="294" width="44" height="8" rx="4" fill="#22D3EE" fill-opacity="0.62"/>
+  <rect x="444" y="294" width="22" height="8" rx="4" fill="#6366F1" fill-opacity="0.45"/>
+  <!-- Deterministic Frame Indicator Dot -->
+  <circle cx="622" cy="298" r="6.5" fill="#F43F5E"/>
+  <circle cx="622" cy="298" r="11.5" stroke="#F43F5E" stroke-opacity="0.30" stroke-width="1.8"/>
+
+  <!-- Side Filmstrip Micro-Notches -->
+  <g fill="#94A3B8" fill-opacity="0.18">
+    <rect x="373" y="348" width="10" height="20" rx="3.5"/>
+    <rect x="373" y="384" width="10" height="20" rx="3.5"/>
+    <rect x="373" y="618" width="10" height="20" rx="3.5"/>
+    <rect x="373" y="654" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="348" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="384" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="618" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="654" width="10" height="20" rx="3.5"/>
+  </g>
+
+  <!-- Hero Mark: Crisp Non-Overlapping '<' + '/' + Play Triangle '>' -->
+  <g filter="url(#emblemGlow)">
+    <!-- Left Angle Bracket '<' -->
+    <path d="M450 444 L394 508 L450 572"
+          stroke="url(#codeGrad)"
+          stroke-width="28"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+
+    <!-- Center Slash '/' with clean negative space on both sides -->
+    <path d="M510 430 L476 586"
+          stroke="#F1F5F9"
+          stroke-opacity="0.95"
+          stroke-width="20"
+          stroke-linecap="round"/>
+
+    <!-- Right Play Triangle (visually completes '>' bracket) -->
+    <path d="M538 444 C538 434 549 428 558 434 L632 496 C639 502 639 514 632 520 L558 582 C549 588 538 582 538 572 Z"
+          fill="url(#playGrad)"/>
+    <!-- Crisp inner highlight facet -->
+    <path d="M550 457 L614 508 L550 559 Z"
+          fill="#FFFFFF"
+          fill-opacity="0.14"/>
+  </g>
+
+  <!-- Bottom Timeline Scrub Track inside 9:16 Reel Frame -->
+  <rect x="392" y="704" width="240" height="10" rx="5" fill="#FFFFFF" fill-opacity="0.10"/>
+  <rect x="392" y="704" width="160" height="10" rx="5" fill="url(#scrubGrad)"/>
+  <circle cx="552" cy="709" r="10.5" fill="#F8FAFC"/>
+  <circle cx="552" cy="709" r="4.8" fill="#F43F5E"/>
+</svg>

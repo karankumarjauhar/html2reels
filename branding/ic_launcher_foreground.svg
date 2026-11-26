@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="reelCardBg" x1="340" y1="240" x2="684" y2="784" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#202742" stop-opacity="0.97"/>
+      <stop offset="50%" stop-color="#14192B" stop-opacity="0.98"/>
+      <stop offset="100%" stop-color="#0D101C" stop-opacity="0.99"/>
+    </linearGradient>
+    <linearGradient id="reelBorderGrad" x1="355" y1="255" x2="669" y2="769" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.80"/>
+      <stop offset="48%" stop-color="#818CF8" stop-opacity="0.48"/>
+      <stop offset="100%" stop-color="#FB7185" stop-opacity="0.78"/>
+    </linearGradient>
+    <linearGradient id="codeGrad" x1="382" y1="430" x2="458" y2="590" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="playGrad" x1="538" y1="426" x2="646" y2="592" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FB7185"/>
+      <stop offset="48%" stop-color="#F43F5E"/>
+      <stop offset="100%" stop-color="#FB923C"/>
+    </linearGradient>
+    <linearGradient id="scrubGrad" x1="392" y1="704" x2="632" y2="704" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="50%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#FB923C"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="366" y="268" width="314" height="492" rx="44"
+        transform="rotate(5.5 523 514)"
+        fill="#1A213A" fill-opacity="0.50"
+        stroke="#6366F1" stroke-opacity="0.26" stroke-width="2"/>
+
+  <rect x="357" y="260" width="310" height="504" rx="44" fill="url(#reelCardBg)"/>
+  <rect x="358.5" y="261.5" width="307" height="501" rx="42.5" stroke="url(#reelBorderGrad)" stroke-width="3"/>
+
+  <rect x="392" y="294" width="44" height="8" rx="4" fill="#22D3EE" fill-opacity="0.62"/>
+  <rect x="444" y="294" width="22" height="8" rx="4" fill="#6366F1" fill-opacity="0.45"/>
+  <circle cx="622" cy="298" r="6.5" fill="#F43F5E"/>
+  <circle cx="622" cy="298" r="11.5" stroke="#F43F5E" stroke-opacity="0.30" stroke-width="1.8"/>
+
+  <g fill="#94A3B8" fill-opacity="0.18">
+    <rect x="373" y="348" width="10" height="20" rx="3.5"/>
+    <rect x="373" y="384" width="10" height="20" rx="3.5"/>
+    <rect x="373" y="618" width="10" height="20" rx="3.5"/>
+    <rect x="373" y="654" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="348" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="384" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="618" width="10" height="20" rx="3.5"/>
+    <rect x="641" y="654" width="10" height="20" rx="3.5"/>
+  </g>
+
+  <path d="M450 444 L394 508 L450 572"
+        stroke="url(#codeGrad)" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M510 430 L476 586"
+        stroke="#F1F5F9" stroke-opacity="0.95" stroke-width="20" stroke-linecap="round"/>
+  <path d="M538 444 C538 434 549 428 558 434 L632 496 C639 502 639 514 632 520 L558 582 C549 588 538 582 538 572 Z"
+        fill="url(#playGrad)"/>
+  <path d="M550 457 L614 508 L550 559 Z" fill="#FFFFFF" fill-opacity="0.14"/>
+
+  <rect x="392" y="704" width="240" height="10" rx="5" fill="#FFFFFF" fill-opacity="0.10"/>
+  <rect x="392" y="704" width="160" height="10" rx="5" fill="url(#scrubGrad)"/>
+  <circle cx="552" cy="709" r="10.5" fill="#F8FAFC"/>
+  <circle cx="552" cy="709" r="4.8" fill="#F43F5E"/>
+</svg>

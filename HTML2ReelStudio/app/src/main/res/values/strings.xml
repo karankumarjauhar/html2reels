@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HTML2Reel Studio</string>
+    <string name="render_channel_name">Video Rendering</string>
+    <string name="render_channel_desc">Shows deterministic HTML5-to-MP4 export progress</string>
+</resources>

@@ -1,0 +1,4 @@
+[bindings.kotlin]
+package_name = "uniffi.html2reel_core"
+android = true
+android_cleaner = true

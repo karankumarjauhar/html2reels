@@ -1,0 +1,74 @@
+name: Build HTML2Reel Studio (Rust + Android APK)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    env:
+      NDK_VERSION: "27.2.12479018"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Rust toolchain with Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: HTML2ReelStudio/rust_core
+
+      - name: Install prebuilt cargo-ndk
+        uses: taiki-e/install-action@cargo-ndk
+
+      - name: Set up Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK 35, Build-Tools 35, and NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> $GITHUB_ENV
+
+      - name: Run Rust Core unit & DSP/Muxer tests
+        working-directory: HTML2ReelStudio/rust_core
+        run: cargo test
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build Rust Native Core, UniFFI bindings, Unit Tests & APKs
+        working-directory: HTML2ReelStudio
+        run: |
+          gradle testDebugUnitTest assembleDebug assembleRelease --no-daemon --stacktrace
+
+      - name: Verify 16 KB ELF alignment on arm64-v8a .so
+        run: |
+          LLVM_OBJDUMP=$(find "${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt" -name "llvm-objdump" | head -n 1)
+          "${LLVM_OBJDUMP}" -p HTML2ReelStudio/app/src/main/jniLibs/arm64-v8a/libhtml2reel_core.so | grep LOAD
+
+      - name: Upload Debug & Release APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: HTML2ReelStudio-APKs
+          path: |
+            HTML2ReelStudio/app/build/outputs/apk/debug/app-debug.apk
+            HTML2ReelStudio/app/build/outputs/apk/release/app-release-unsigned.apk

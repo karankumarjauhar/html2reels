@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="video-duration" content="8" />
+  <meta name="video-resolution" content="1080x1920" />
+  <meta name="video-fps" content="30" />
+  <title>Deterministic Orbit — Explicit seekTo Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 1080px;
+      height: 1920px;
+      overflow: hidden;
+      background: #080B14;
+      color: #F8FAFC;
+      font-family: 'Playfair Display', serif;
+    }
+    canvas {
+      display: block;
+      width: 1080px;
+      height: 1920px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" width="1080" height="1920"></canvas>
+  <script>
+    const canvas = document.getElementById('scene');
+    const ctx = canvas.getContext('2d');
+
+    window.seekTo = function(seconds) {
+      const t = Math.max(0, Math.min(8, seconds));
+      const p = t / 8;
+
+      const bg = ctx.createRadialGradient(540, 820, 40, 540, 960, 1080);
+      bg.addColorStop(0, '#1B2347');
+      bg.addColorStop(0.55, '#0E1324');
+      bg.addColorStop(1, '#060810');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, 1080, 1920);
+
+      // Orbit rings
+      for (let i = 0; i < 4; i++) {
+        const radius = 150 + i * 95;
+        ctx.beginPath();
+        ctx.arc(540, 820, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(129, 140, 248, ${0.35 - i * 0.06})`;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        const angle = p * Math.PI * 2 * (i + 1) - Math.PI / 2;
+        const ox = 540 + Math.cos(angle) * radius;
+        const oy = 820 + Math.sin(angle) * radius;
+        ctx.beginPath();
+        ctx.arc(ox, oy, 16 - i * 2, 0, Math.PI * 2);
+        ctx.fillStyle = i % 2 === 0 ? '#22D3EE' : '#FB7185';
+        ctx.fill();
+      }
+
+      ctx.fillStyle = '#F8FAFC';
+      ctx.textAlign = 'center';
+      ctx.font = '700 76px "Playfair Display", serif';
+      ctx.fillText('Frame-Accurate', 540, 1410);
+      ctx.fillStyle = '#38BDF8';
+      ctx.font = 'italic 64px "Playfair Display", serif';
+      ctx.fillText('HTML5 → MP4', 540, 1500);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.16)';
+      ctx.fillRect(190, 1620, 700, 12);
+      ctx.fillStyle = '#F43F5E';
+      ctx.fillRect(190, 1620, 700 * p, 12);
+    };
+
+    window.seekTo(0);
+  </script>
+</body>
+</html>
