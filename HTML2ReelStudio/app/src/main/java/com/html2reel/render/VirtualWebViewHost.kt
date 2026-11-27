@@ -37,10 +37,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayInputStream
 import java.util.concurrent.ConcurrentHashMap
 
-enum class CaptureMode {
-    OES_TEXTURE,
-    PIXEL_COPY,
-    SOFTWARE_BITMAP
+enum class CaptureMode(val shortLabel: String) {
+    OES_TEXTURE("GPU OES"),
+    PIXEL_COPY("HW Copy"),
+    SOFTWARE_BITMAP("Software")
 }
 
 /**
@@ -62,10 +62,13 @@ class VirtualWebViewHost(
 
     private var pixelCopyThread: HandlerThread? = null
     private var pixelCopyHandler: Handler? = null
-    private var pixelCopyBitmap: Bitmap? = null
+    private val pixelCopyBitmaps = arrayOfNulls<Bitmap>(2)
 
-    private var fallbackBitmap: Bitmap? = null
-    private var fallbackCanvas: Canvas? = null
+    private val fallbackBitmaps = arrayOfNulls<Bitmap>(2)
+    private val fallbackCanvases = arrayOfNulls<Canvas>(2)
+
+    var softwareRafAlive: Boolean = true
+        private set
 
     @Volatile
     private var pageLoaded = CompletableDeferred<Unit>()
@@ -161,11 +164,14 @@ class VirtualWebViewHost(
             val wv = createConfiguredWebView(appContext, softwareLayer = true)
             layoutWebViewExact(wv)
             webView = wv
-            ensureFallbackBuffer()
+            ensureFallbackBuffer(0)
         }
 
         val activeWv = webView ?: error("WebView creation failed")
         loadAndWaitForReady(activeWv)
+        if (!usingPresentationMode) {
+            probeSoftwareRafResponsiveness()
+        }
         usingPresentationMode
     }
 
@@ -208,8 +214,9 @@ class VirtualWebViewHost(
         }
         layoutWebViewExact(wv)
         webView = wv
-        ensureFallbackBuffer()
+        ensureFallbackBuffer(0)
         loadAndWaitForReady(wv)
+        probeSoftwareRafResponsiveness()
     }
 
     suspend fun reloadCleanFromStart(softwareLayer: Boolean) = withContext(Dispatchers.Main) {
@@ -225,9 +232,17 @@ class VirtualWebViewHost(
         layoutWebViewExact(wv)
         webView = wv
         if (softwareLayer) {
-            ensureFallbackBuffer()
+            ensureFallbackBuffer(0)
         }
         loadAndWaitForReady(wv)
+    }
+
+    private suspend fun probeSoftwareRafResponsiveness() {
+        val start = System.currentTimeMillis()
+        seekAndWaitForSettle(0.0, -102, maxStepMs = 34.0, barrierMs = 35, rafCount = 1)
+        val elapsed = System.currentTimeMillis() - start
+        softwareRafAlive = elapsed < 32L
+        Log.i(TAG, "Software rAF probe completed in ${elapsed}ms (alive=$softwareRafAlive)")
     }
 
     private suspend fun loadAndWaitForReady(wv: WebView) {
@@ -244,11 +259,20 @@ class VirtualWebViewHost(
         wv.invalidate()
     }
 
-    suspend fun seekAndWaitForSettle(seconds: Double, seq: Int) = withContext(Dispatchers.Main) {
+    suspend fun seekAndWaitForSettle(
+        seconds: Double,
+        seq: Int,
+        maxStepMs: Double = 1000.0 / 60.0,
+        barrierMs: Int = 45,
+        rafCount: Int = 2
+    ) = withContext(Dispatchers.Main) {
         val wv = webView ?: error("WebView not initialized")
         val waiter = CompletableDeferred<Unit>()
         frameWaiters[seq] = waiter
-        wv.evaluateJavascript("window.__HTML2REEL__ && window.__HTML2REEL__.seekAndNotify($seconds, $seq);", null)
+        wv.evaluateJavascript(
+            "window.__HTML2REEL__ && window.__HTML2REEL__.seekAndNotify($seconds, $seq, $maxStepMs, $barrierMs, $rafCount);",
+            null
+        )
         try {
             withTimeout(5_000L) {
                 waiter.await()
@@ -273,9 +297,10 @@ class VirtualWebViewHost(
         withTimeoutOrNull(35L) { posted.await() }
     }
 
-    suspend fun capturePixelCopyBitmap(): Bitmap? {
+    suspend fun capturePixelCopyBitmap(bufferIndex: Int = 0): Bitmap? {
         invalidateWebView()
         awaitUiFrame()
+        val slot = bufferIndex and 1
         val resultDeferred = CompletableDeferred<Int>()
         val bmp = withContext<Bitmap?>(Dispatchers.Main) {
             val win = presentation?.window ?: return@withContext null
@@ -283,8 +308,13 @@ class VirtualWebViewHost(
             if (!decor.isAttachedToWindow || decor.width <= 0 || decor.height <= 0) {
                 return@withContext null
             }
-            val target = pixelCopyBitmap ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
-                pixelCopyBitmap = it
+            val existing = pixelCopyBitmaps[slot]
+            val target = if (existing != null && !existing.isRecycled) {
+                existing
+            } else {
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                    pixelCopyBitmaps[slot] = it
+                }
             }
             val handler = pixelCopyHandler ?: HandlerThread("HTML2Reel-PixelCopy").let {
                 it.start()
@@ -308,11 +338,12 @@ class VirtualWebViewHost(
         return if (status == PixelCopy.SUCCESS) bmp else null
     }
 
-    suspend fun drawFallbackBitmap(): Bitmap = withContext(Dispatchers.Main) {
+    suspend fun drawFallbackBitmap(bufferIndex: Int = 0): Bitmap = withContext(Dispatchers.Main) {
         val wv = webView ?: error("WebView not initialized")
-        ensureFallbackBuffer()
-        val bmp = fallbackBitmap ?: error("Fallback bitmap not allocated")
-        val canvas = fallbackCanvas ?: error("Fallback canvas not allocated")
+        val slot = bufferIndex and 1
+        ensureFallbackBuffer(slot)
+        val bmp = fallbackBitmaps[slot] ?: error("Fallback bitmap not allocated")
+        val canvas = fallbackCanvases[slot] ?: error("Fallback canvas not allocated")
         if (wv.width != width || wv.height != height) {
             layoutWebViewExact(wv)
         }
@@ -321,11 +352,12 @@ class VirtualWebViewHost(
         bmp
     }
 
-    private fun ensureFallbackBuffer() {
-        if (fallbackBitmap == null || fallbackBitmap?.isRecycled == true) {
+    private fun ensureFallbackBuffer(slot: Int) {
+        val existing = fallbackBitmaps[slot]
+        if (existing == null || existing.isRecycled) {
             val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            fallbackBitmap = bmp
-            fallbackCanvas = Canvas(bmp)
+            fallbackBitmaps[slot] = bmp
+            fallbackCanvases[slot] = Canvas(bmp)
         }
     }
 
@@ -419,11 +451,15 @@ class VirtualWebViewHost(
         runCatching { pixelCopyThread?.quitSafely() }
         pixelCopyThread = null
         pixelCopyHandler = null
-        runCatching { pixelCopyBitmap?.recycle() }
-        pixelCopyBitmap = null
-        runCatching { fallbackBitmap?.recycle() }
-        fallbackBitmap = null
-        fallbackCanvas = null
+        pixelCopyBitmaps.indices.forEach { idx ->
+            runCatching { pixelCopyBitmaps[idx]?.recycle() }
+            pixelCopyBitmaps[idx] = null
+        }
+        fallbackBitmaps.indices.forEach { idx ->
+            runCatching { fallbackBitmaps[idx]?.recycle() }
+            fallbackBitmaps[idx] = null
+            fallbackCanvases[idx] = null
+        }
     }
 
     companion object {

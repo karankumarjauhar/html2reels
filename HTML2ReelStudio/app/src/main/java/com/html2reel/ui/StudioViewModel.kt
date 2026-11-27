@@ -161,7 +161,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val meta = preprocessed.metadata
             val preset = matchPreset(meta.width?.toInt(), meta.height?.toInt())
             val duration = (meta.durationSec?.toFloat() ?: 10f).coerceIn(1f, 600f)
-            val fps = if (meta.fps?.toInt() == 60) 60 else 30
+            val fps = when (meta.fps?.toInt()) {
+                24 -> 24
+                60 -> 60
+                else -> 30
+            }
             val title = meta.title?.takeIf { it.isNotBlank() } ?: fallbackTitle
             val id = existingId ?: UUID.randomUUID().toString()
 

@@ -471,20 +471,40 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
   let rafQueue = [];
   let timers = [];
 
-  // MutationObserver-backed animation cache (avoids per-frame O(n) DOM queries).
+  // MutationObserver-backed animation cache (avoids per-frame O(n) DOM style thrash).
   let cachedAnimations = [];
+  let cachedHasSmilSvg = null;
   let animationsDirty = true;
-  const observer = new MutationObserver(() => {{ animationsDirty = true; }});
+  const observer = new MutationObserver((mutations) => {{
+    for (let i = 0; i < mutations.length; i++) {{
+      if (mutations[i].type === 'childList') {{
+        animationsDirty = true;
+        cachedHasSmilSvg = null;
+        break;
+      }}
+      if (mutations[i].type === 'attributes') {{
+        animationsDirty = true;
+        break;
+      }}
+    }}
+  }});
   const startObserver = () => {{
     if (document.documentElement) {{
       observer.observe(document.documentElement, {{
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['style', 'class']
+        attributeFilter: ['class']
       }});
     }}
   }};
+  if (typeof Element !== 'undefined' && Element.prototype && typeof Element.prototype.animate === 'function') {{
+    const nativeElAnimate = Element.prototype.animate;
+    Element.prototype.animate = function(...args) {{
+      animationsDirty = true;
+      return nativeElAnimate.apply(this, args);
+    }};
+  }}
   if (document.readyState === 'loading') {{
     document.addEventListener('DOMContentLoaded', startObserver, {{ once: true }});
   }} else {{
@@ -506,22 +526,37 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }}
   }}
 
+  function checkHasSmilSvg() {{
+    if (cachedHasSmilSvg === null) {{
+      try {{
+        cachedHasSmilSvg = document.querySelector('svg animate, svg animateTransform, svg animateMotion, svg set') !== null;
+      }} catch (_) {{
+        cachedHasSmilSvg = false;
+      }}
+    }}
+    return cachedHasSmilSvg;
+  }}
+
   function syncDomAndSvgTimelines(seconds, ms) {{
-    refreshAnimations();
+    if (animationsDirty) {{
+      refreshAnimations();
+    }}
     for (let i = 0; i < cachedAnimations.length; i++) {{
       try {{
         cachedAnimations[i].pause();
         cachedAnimations[i].currentTime = ms;
       }} catch (_) {{}}
     }}
-    const svgs = document.getElementsByTagName('svg');
-    for (let i = 0; i < svgs.length; i++) {{
-      const svg = svgs[i];
-      if (typeof svg.pauseAnimations === 'function') {{
-        try {{
-          svg.pauseAnimations();
-          svg.setCurrentTime(seconds);
-        }} catch (_) {{}}
+    if (checkHasSmilSvg()) {{
+      const svgs = document.getElementsByTagName('svg');
+      for (let i = 0; i < svgs.length; i++) {{
+        const svg = svgs[i];
+        if (typeof svg.pauseAnimations === 'function') {{
+          try {{
+            svg.pauseAnimations();
+            svg.setCurrentTime(seconds);
+          }} catch (_) {{}}
+        }}
       }}
     }}
   }}
@@ -633,7 +668,7 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }} catch (_) {{}}
   }}
 
-  function seekTo(seconds) {{
+  function seekTo(seconds, maxStepMs) {{
     const s = Math.max(0, Number(seconds) || 0);
     const targetMs = s * 1000.0;
     enableVirtualClock();
@@ -657,7 +692,8 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }}
 
     // Priority 2: step virtual clock monotonically toward targetMs so rAF animations advance cleanly.
-    const stepMs = 1000.0 / 60.0;
+    const rawStep = Number(maxStepMs);
+    const stepMs = (Number.isFinite(rawStep) && rawStep >= 8.0) ? Math.min(45.0, rawStep) : (1000.0 / 60.0);
     if (targetMs < virtualMs) {{
       virtualMs = targetMs;
       flushTimersAndRaf(targetMs);
@@ -678,15 +714,25 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }} catch (_) {{}}
   }}
 
-  function settlePaintBarrier(maxFallbackMs, cb) {{
+  function settlePaintBarrier(maxFallbackMs, rafCount, cb) {{
     let done = false;
     const finish = () => {{
       if (done) return;
       done = true;
       cb();
     }};
-    nativeRAF(() => nativeRAF(finish));
-    nativeSetTimeout(finish, maxFallbackMs);
+    const waitMs = Math.max(1, Number(maxFallbackMs) || 1);
+    const count = (rafCount === undefined || rafCount === null) ? 2 : Number(rafCount);
+    if (count <= 0) {{
+      nativeSetTimeout(finish, waitMs);
+      return;
+    }}
+    if (count === 1) {{
+      nativeRAF(finish);
+    }} else {{
+      nativeRAF(() => nativeRAF(finish));
+    }}
+    nativeSetTimeout(finish, waitMs);
   }}
 
   async function waitUntilReady(seq) {{
@@ -705,16 +751,18 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
       tryAutoStartOverlay();
     }}
     hideHudIfEnabled();
-    settlePaintBarrier(120, () => {{
+    settlePaintBarrier(120, 2, () => {{
       if (window.__HTML2REEL_BRIDGE__ && typeof window.__HTML2REEL_BRIDGE__.onReady === 'function') {{
         window.__HTML2REEL_BRIDGE__.onReady(seq);
       }}
     }});
   }}
 
-  function seekAndNotify(seconds, seq) {{
-    seekTo(seconds);
-    settlePaintBarrier(80, () => {{
+  function seekAndNotify(seconds, seq, maxStepMs, barrierMs, rafCount) {{
+    seekTo(seconds, maxStepMs);
+    const maxWait = (barrierMs === undefined || barrierMs === null) ? 45 : barrierMs;
+    const count = (rafCount === undefined || rafCount === null) ? 2 : rafCount;
+    settlePaintBarrier(maxWait, count, () => {{
       if (window.__HTML2REEL_BRIDGE__ && typeof window.__HTML2REEL_BRIDGE__.onFrameSettled === 'function') {{
         window.__HTML2REEL_BRIDGE__.onFrameSettled(seq);
       }}
@@ -816,6 +864,8 @@ mod tests {
         assert!(out.html.contains("const EXPORT_MODE = true;"));
         assert!(out.html.contains("tryAutoStartOverlay"));
         assert!(out.html.contains("#start-overlay"));
+        assert!(out.html.contains("checkHasSmilSvg"));
+        assert!(out.html.contains("seekAndNotify(seconds, seq, maxStepMs, barrierMs, rafCount)"));
     }
 
     #[test]

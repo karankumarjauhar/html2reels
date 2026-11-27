@@ -212,6 +212,11 @@ fun StudioScreen(
                                 )
                             }
                         }
+                        Text(
+                            text = "Tip: 720×1280 or 24 fps exports up to 2.5× faster on mobile devices.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = StudioTextMuted
+                        )
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -219,14 +224,14 @@ fun StudioScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Frame Rate", style = MaterialTheme.typography.labelMedium)
+                                Text("Frame Rate (fps)", style = MaterialTheme.typography.labelMedium)
                                 Spacer(Modifier.height(4.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    listOf(30, 60).forEach { fps ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(24, 30, 60).forEach { fps ->
                                         FilterChip(
                                             selected = config.fps == fps,
                                             onClick = { onConfigChange { it.copy(fps = fps) } },
-                                            label = { Text("$fps fps") }
+                                            label = { Text("$fps") }
                                         )
                                     }
                                 }

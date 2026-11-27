@@ -144,63 +144,96 @@ class RenderPipeline(
 
             val totalFrames = config.totalFrames
             val fps = config.fps
+            val stepMs = ((1000.0 / fps.toDouble()) + 0.75).coerceIn(16.0, 45.0)
             var latestThumb: Bitmap? = null
+            var pendingGlDeferred: CompletableDeferred<Bitmap?>? = null
+            var pendingFrameIdx = -1
 
             // 6. Step frame = 0 .. totalFrames - 1 deterministically off Main thread
-            //    so Choreographer/ViewRootImpl on Main thread never stalls waiting on OES fences.
-            withContext(Dispatchers.Default) {
-                val activeMode = resolveCaptureMode(
-                    host = host,
-                    glBlitter = glBlitter,
-                    glHandler = glHandler,
-                    presentationAvailable = presentationAvailable,
-                    durationSec = config.durationSec.toDouble()
-                )
-                Log.i(TAG, "Starting deterministic frame loop ($totalFrames frames, mode=$activeMode)")
-
-                for (frame in 0 until totalFrames) {
-                    currentCoroutineContext().ensureActive()
-                    if (cancelled.get()) throw CancellationException("Render cancelled by user")
-
-                    val tSec = frame.toDouble() / fps.toDouble()
-                    val ptsNs = (frame.toLong() * 1_000_000_000L) / fps.toLong()
-                    val captureThumb = (frame == 0 || frame % 12 == 0 || frame == totalFrames - 1)
-
-                    val thumb: Bitmap? = renderSingleFrame(
-                        mode = activeMode,
+            //    with double-buffered async GL/MediaCodec overlap.
+            try {
+                withContext(Dispatchers.Default) {
+                    val activeMode = resolveCaptureMode(
                         host = host,
                         glBlitter = glBlitter,
                         glHandler = glHandler,
-                        vEnc = vEnc,
-                        muxer = activeMuxer,
-                        tSec = tSec,
-                        ptsNs = ptsNs,
-                        seq = frame,
-                        captureThumb = captureThumb
+                        presentationAvailable = presentationAvailable,
+                        durationSec = config.durationSec.toDouble()
                     )
-                    if (thumb != null && !thumb.isRecycled) {
-                        latestThumb = thumb
+                    val (loopBarrierMs, loopRafCount) = when (activeMode) {
+                        CaptureMode.OES_TEXTURE -> 18 to 1
+                        CaptureMode.PIXEL_COPY -> 24 to 1
+                        CaptureMode.SOFTWARE_BITMAP -> if (host.softwareRafAlive) 20 to 1 else 4 to 0
                     }
-                    muxedFrames = frame + 1
-
-                    val elapsed = System.currentTimeMillis() - startMs
-                    val avgPerFrame = elapsed.toDouble() / muxedFrames.toDouble()
-                    val eta = ((totalFrames - muxedFrames) * avgPerFrame).toLong().coerceAtLeast(0L)
-                    onProgress(
-                        RenderState.Rendering(
-                            currentFrame = muxedFrames,
-                            totalFrames = totalFrames,
-                            elapsedMs = elapsed,
-                            etaMs = eta,
-                            phaseLabel = "Rendering frames",
-                            previewThumbnail = latestThumb
-                        )
+                    Log.i(
+                        TAG,
+                        "Starting deterministic loop ($totalFrames frames @ ${fps}fps, mode=$activeMode, stepMs=$stepMs, barrier=${loopBarrierMs}ms/${loopRafCount}rAF)"
                     )
-                }
 
-                // 7. Flush VideoEncoder EOS
-                runOnHandler(glHandler) {
-                    vEnc.drain(endOfStream = true, muxer = activeMuxer)
+                    for (frame in 0 until totalFrames) {
+                        currentCoroutineContext().ensureActive()
+                        if (cancelled.get()) throw CancellationException("Render cancelled by user")
+
+                        val bufSlot = frame and 1
+                        val tSec = frame.toDouble() / fps.toDouble()
+                        val ptsNs = (frame.toLong() * 1_000_000_000L) / fps.toLong()
+                        val captureThumb = (frame == 0 || frame % 30 == 0 || frame == totalFrames - 1)
+
+                        val prevOesSeq = glBlitter.currentOesSeq()
+                        host.seekAndWaitForSettle(tSec, frame, stepMs, loopBarrierMs, loopRafCount)
+
+                        if (activeMode == CaptureMode.OES_TEXTURE) {
+                            host.invalidateWebView()
+                            glBlitter.awaitNewOesFrame(prevOesSeq, 45L)
+                            pendingGlDeferred?.let { prev ->
+                                latestThumb = awaitAndReportProgress(
+                                    prev, pendingFrameIdx, totalFrames, startMs, activeMode, latestThumb, onProgress
+                                )
+                                muxedFrames = pendingFrameIdx + 1
+                            }
+                            pendingFrameIdx = frame
+                            pendingGlDeferred = postToHandler(glHandler) {
+                                val bmp = glBlitter.drawOesFrame(ptsNs, captureThumb)
+                                vEnc.drain(endOfStream = false, muxer = activeMuxer)
+                                bmp
+                            }
+                        } else {
+                            val frameBmp = if (activeMode == CaptureMode.PIXEL_COPY) {
+                                host.capturePixelCopyBitmap(bufSlot) ?: host.drawFallbackBitmap(bufSlot)
+                            } else {
+                                host.drawFallbackBitmap(bufSlot)
+                            }
+                            pendingGlDeferred?.let { prev ->
+                                latestThumb = awaitAndReportProgress(
+                                    prev, pendingFrameIdx, totalFrames, startMs, activeMode, latestThumb, onProgress
+                                )
+                                muxedFrames = pendingFrameIdx + 1
+                            }
+                            pendingFrameIdx = frame
+                            pendingGlDeferred = postToHandler(glHandler) {
+                                val bmp = glBlitter.drawBitmapFrame(frameBmp, ptsNs, captureThumb)
+                                vEnc.drain(endOfStream = false, muxer = activeMuxer)
+                                bmp
+                            }
+                        }
+                    }
+
+                    pendingGlDeferred?.let { last ->
+                        latestThumb = awaitAndReportProgress(
+                            last, pendingFrameIdx, totalFrames, startMs, activeMode, latestThumb, onProgress
+                        )
+                        pendingGlDeferred = null
+                        muxedFrames = pendingFrameIdx + 1
+                    }
+
+                    // 7. Flush VideoEncoder EOS
+                    runOnHandler(glHandler) {
+                        vEnc.drain(endOfStream = true, muxer = activeMuxer)
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    runCatching { pendingGlDeferred?.await() }
                 }
             }
 
@@ -363,53 +396,35 @@ class RenderPipeline(
         return CaptureMode.SOFTWARE_BITMAP
     }
 
-    private suspend fun renderSingleFrame(
-        mode: CaptureMode,
-        host: VirtualWebViewHost,
-        glBlitter: EglSurfaceBlitter,
-        glHandler: Handler,
-        vEnc: VideoEncoder,
-        muxer: Mp4MuxerSession,
-        tSec: Double,
-        ptsNs: Long,
-        seq: Int,
-        captureThumb: Boolean
+    private suspend fun awaitAndReportProgress(
+        pending: CompletableDeferred<Bitmap?>,
+        completedFrameIdx: Int,
+        totalFrames: Int,
+        startMs: Long,
+        activeMode: CaptureMode,
+        previousThumb: Bitmap?,
+        onProgress: (RenderState.Rendering) -> Unit
     ): Bitmap? {
-        val prevOesSeq = glBlitter.currentOesSeq()
-        host.seekAndWaitForSettle(tSec, seq)
-
-        return when (mode) {
-            CaptureMode.OES_TEXTURE -> {
-                host.invalidateWebView()
-                glBlitter.awaitNewOesFrame(prevOesSeq, 45L)
-                runOnHandler(glHandler) {
-                    val bmp = glBlitter.drawOesFrame(ptsNs, captureThumb)
-                    vEnc.drain(endOfStream = false, muxer = muxer)
-                    bmp
-                }
-            }
-
-            CaptureMode.PIXEL_COPY -> {
-                val frameBmp = host.capturePixelCopyBitmap() ?: host.drawFallbackBitmap()
-                runOnHandler(glHandler) {
-                    val bmp = glBlitter.drawBitmapFrame(frameBmp, ptsNs, captureThumb)
-                    vEnc.drain(endOfStream = false, muxer = muxer)
-                    bmp
-                }
-            }
-
-            CaptureMode.SOFTWARE_BITMAP -> {
-                val frameBmp = host.drawFallbackBitmap()
-                runOnHandler(glHandler) {
-                    val bmp = glBlitter.drawBitmapFrame(frameBmp, ptsNs, captureThumb)
-                    vEnc.drain(endOfStream = false, muxer = muxer)
-                    bmp
-                }
-            }
-        }
+        val completedThumb = pending.await()
+        val thumb = if (completedThumb != null && !completedThumb.isRecycled) completedThumb else previousThumb
+        val doneCount = completedFrameIdx + 1
+        val elapsed = System.currentTimeMillis() - startMs
+        val avgPerFrame = elapsed.toDouble() / doneCount.toDouble()
+        val eta = ((totalFrames - doneCount) * avgPerFrame).toLong().coerceAtLeast(0L)
+        onProgress(
+            RenderState.Rendering(
+                currentFrame = doneCount,
+                totalFrames = totalFrames,
+                elapsedMs = elapsed,
+                etaMs = eta,
+                phaseLabel = "Rendering frames (${activeMode.shortLabel})",
+                previewThumbnail = thumb
+            )
+        )
+        return thumb
     }
 
-    private suspend fun <T> runOnHandler(handler: Handler, block: () -> T): T {
+    private fun <T> postToHandler(handler: Handler, block: () -> T): CompletableDeferred<T> {
         val deferred = CompletableDeferred<T>()
         if (!handler.post {
                 try {
@@ -418,9 +433,13 @@ class RenderPipeline(
                     deferred.completeExceptionally(t)
                 }
             }) {
-            throw IllegalStateException("GL HandlerThread is dead")
+            deferred.completeExceptionally(IllegalStateException("GL HandlerThread is dead"))
         }
-        return deferred.await()
+        return deferred
+    }
+
+    private suspend fun <T> runOnHandler(handler: Handler, block: () -> T): T {
+        return postToHandler(handler, block).await()
     }
 
     companion object {
