@@ -94,7 +94,7 @@ val generateUniffiBindings by tasks.registering(Exec::class) {
     dependsOn(buildRustCore)
     workingDir = rustCoreDir
     inputs.files(fileTree(rustCoreDir) {
-        include("Cargo.toml", "uniffi-bindgen.rs", "src/**/*.rs")
+        include("Cargo.toml", "uniffi.toml", "uniffi-bindgen.rs", "src/**/*.rs")
     })
     outputs.dir(uniffiOutDir)
 
@@ -109,7 +109,6 @@ val generateUniffiBindings by tasks.registering(Exec::class) {
     commandLine(
         "cargo", "run", "--bin", "uniffi-bindgen", "--features", "bindgen", "--",
         "generate", "--library", libArg, "--language", "kotlin", "--no-format",
-        "--config", "${rustCoreDir.absolutePath}/uniffi.toml",
         "--out-dir", uniffiOutDir.get().asFile.absolutePath
     )
 }

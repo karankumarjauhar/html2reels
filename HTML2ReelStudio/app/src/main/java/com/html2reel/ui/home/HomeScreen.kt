@@ -305,7 +305,7 @@ private fun PasteHtmlDialog(
 body { margin:0; width:1080px; height:1920px; display:flex; align-items:center; justify-content:center; background:#0b0f1c; color:#fff; font-size:72px; font-family:sans-serif; }
 </style></head>
 <body><div id="msg">Hello HTML2Reel</div>
-<script>window.seekTo = (t) => { msg.style.transform = `scale(${1 + Math.sin(t*3)*0.15})`; };</script>
+<script>window.seekTo = (t) => { msg.style.transform = 'scale(' + (1 + Math.sin(t * 3) * 0.15) + ')'; };</script>
 </body></html>"""
         )
     }
