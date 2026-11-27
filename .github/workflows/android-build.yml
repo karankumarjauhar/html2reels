@@ -39,13 +39,17 @@ jobs:
         with:
           tool: cargo-ndk
 
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
-
       - name: Install SDK 35, Build-Tools 35, and NDK
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}"
+          SDKMGR=$(find "${ANDROID_HOME}/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          if [ -z "${SDKMGR}" ]; then
+            echo "sdkmanager not found under ANDROID_HOME=${ANDROID_HOME}"
+            exit 1
+          fi
+          echo "$(dirname "${SDKMGR}")" >> $GITHUB_PATH
+          echo "${ANDROID_HOME}/platform-tools" >> $GITHUB_PATH
+          yes | "${SDKMGR}" --licenses > /dev/null || true
+          "${SDKMGR}" "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${NDK_VERSION}" >> $GITHUB_ENV
 
       - name: Run Rust Core unit & DSP/Muxer tests
