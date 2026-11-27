@@ -3,6 +3,7 @@ package com.html2reel
 import com.html2reel.model.AspectPreset
 import com.html2reel.model.AudioConfig
 import com.html2reel.model.RenderConfig
+import com.html2reel.model.RenderSpeedMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -42,5 +43,28 @@ class RenderConfigTest {
             assertTrue("PTS must strictly increase at frame $frame", ptsNs > prev)
             prev = ptsNs
         }
+    }
+
+    @Test
+    fun speed_mode_computes_even_scaled_dimensions_for_gpu_upscale() {
+        val fastCfg = RenderConfig(
+            projectId = "fast-1",
+            projectTitle = "Fast",
+            rawHtml = "<html></html>",
+            preset = AspectPreset.REEL_FHD,
+            speedMode = RenderSpeedMode.FAST
+        )
+        assertEquals(810, fastCfg.internalRenderWidth())
+        assertEquals(1440, fastCfg.internalRenderHeight())
+        assertTrue(fastCfg.speedMode.simplifyHeavyEffects)
+
+        val turboCfg = fastCfg.copy(speedMode = RenderSpeedMode.TURBO)
+        assertEquals(720, turboCfg.internalRenderWidth())
+        assertEquals(1280, turboCfg.internalRenderHeight())
+
+        val exactCfg = fastCfg.copy(speedMode = RenderSpeedMode.EXACT)
+        assertEquals(1080, exactCfg.internalRenderWidth())
+        assertEquals(1920, exactCfg.internalRenderHeight())
+        assertFalse(exactCfg.speedMode.simplifyHeavyEffects)
     }
 }

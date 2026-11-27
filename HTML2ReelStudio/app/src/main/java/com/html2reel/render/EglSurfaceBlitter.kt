@@ -27,7 +27,9 @@ import java.util.concurrent.atomic.AtomicInteger
 class EglSurfaceBlitter(
     private val codecInputSurface: Surface,
     private val width: Int,
-    private val height: Int
+    private val height: Int,
+    private val inputWidth: Int = width,
+    private val inputHeight: Int = height
 ) {
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
@@ -139,7 +141,7 @@ class EglSurfaceBlitter(
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
 
         surfaceTexture = SurfaceTexture(oesTextureId).apply {
-            setDefaultBufferSize(width, height)
+            setDefaultBufferSize(inputWidth, inputHeight)
             setOnFrameAvailableListener {
                 synchronized(frameLock) {
                     frameCounter.incrementAndGet()

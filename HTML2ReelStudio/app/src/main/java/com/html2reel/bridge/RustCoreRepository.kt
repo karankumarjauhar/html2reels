@@ -20,6 +20,7 @@ class RustCoreRepository {
         rawHtml: String,
         exportMode: Boolean,
         autoHideHud: Boolean,
+        simplifyHeavyEffects: Boolean = false,
         fontBaseUrl: String = VirtualWebViewHost.FONT_BASE_URL
     ): PreprocessedHtml {
         return preprocessHtmlDocument(
@@ -27,6 +28,7 @@ class RustCoreRepository {
             options = PreprocessOptions(
                 exportMode = exportMode,
                 autoHideHud = autoHideHud,
+                simplifyHeavyEffects = simplifyHeavyEffects,
                 injectOfflineFonts = true,
                 fontBaseUrl = fontBaseUrl
             )

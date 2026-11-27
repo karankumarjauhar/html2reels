@@ -18,6 +18,7 @@ pub struct HtmlMetadata {
 pub struct PreprocessOptions {
     pub export_mode: bool,
     pub auto_hide_hud: bool,
+    pub simplify_heavy_effects: bool,
     pub inject_offline_fonts: bool,
     pub font_base_url: String,
 }
@@ -45,6 +46,17 @@ pub fn preprocess_html(raw_html: &str, options: &PreprocessOptions) -> Preproces
             "<style data-html2reel-hud>\
              .hud, #hud, .controls, #controls, .start-overlay, #start-overlay, .play-overlay, #play-overlay, [data-export-hide] { \
              display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; \
+             }\
+             </style>",
+        );
+    }
+
+    if options.export_mode && options.simplify_heavy_effects {
+        injection.push_str(
+            "<style data-html2reel-turbo>\
+             *, *::before, *::after { \
+             backdrop-filter: none !important; -webkit-backdrop-filter: none !important; \
+             transition: none !important; transition-duration: 0s !important; \
              }\
              </style>",
         );
@@ -471,18 +483,38 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
   let rafQueue = [];
   let timers = [];
 
-  // MutationObserver-backed animation cache (avoids per-frame O(n) DOM style thrash).
+  // MutationObserver-backed animation cache (ignores plain-text updates & non-SVG child mutations).
   let cachedAnimations = [];
   let cachedHasSmilSvg = null;
   let animationsDirty = true;
+  const hasElementNode = (list) => {{
+    for (let i = 0; i < list.length; i++) {{
+      if (list[i].nodeType === 1) return true;
+    }}
+    return false;
+  }};
+  const hasSvgOrSmilNode = (list) => {{
+    for (let i = 0; i < list.length; i++) {{
+      const n = list[i];
+      if (n.nodeType !== 1) continue;
+      const tag = (n.tagName || '').toLowerCase();
+      if (tag === 'svg' || tag === 'animate' || tag === 'animatetransform' || tag === 'animatemotion' || tag === 'set') return true;
+      if (n.querySelector && n.querySelector('svg animate, svg animateTransform, svg animateMotion, svg set')) return true;
+    }}
+    return false;
+  }};
   const observer = new MutationObserver((mutations) => {{
     for (let i = 0; i < mutations.length; i++) {{
-      if (mutations[i].type === 'childList') {{
-        animationsDirty = true;
-        cachedHasSmilSvg = null;
-        break;
-      }}
-      if (mutations[i].type === 'attributes') {{
+      const m = mutations[i];
+      if (m.type === 'childList') {{
+        if (hasElementNode(m.addedNodes) || hasElementNode(m.removedNodes)) {{
+          animationsDirty = true;
+          if (hasSvgOrSmilNode(m.addedNodes) || hasSvgOrSmilNode(m.removedNodes)) {{
+            cachedHasSmilSvg = null;
+          }}
+          break;
+        }}
+      }} else if (m.type === 'attributes') {{
         animationsDirty = true;
         break;
       }}
@@ -721,7 +753,8 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
       done = true;
       cb();
     }};
-    const waitMs = Math.max(1, Number(maxFallbackMs) || 1);
+    const rawWait = Number(maxFallbackMs);
+    const waitMs = Number.isFinite(rawWait) ? Math.max(0, rawWait) : 1;
     const count = (rafCount === undefined || rafCount === null) ? 2 : Number(rafCount);
     if (count <= 0) {{
       nativeSetTimeout(finish, waitMs);
@@ -732,7 +765,7 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }} else {{
       nativeRAF(() => nativeRAF(finish));
     }}
-    nativeSetTimeout(finish, waitMs);
+    nativeSetTimeout(finish, Math.max(1, waitMs));
   }}
 
   async function waitUntilReady(seq) {{
@@ -849,6 +882,7 @@ mod tests {
             &PreprocessOptions {
                 export_mode: true,
                 auto_hide_hud: true,
+                simplify_heavy_effects: true,
                 inject_offline_fonts: true,
                 font_base_url: "https://appassets.androidplatform.net/assets/fonts/".into(),
             },
@@ -856,12 +890,15 @@ mod tests {
         let shim_pos = out.html.find("data-html2reel-shim").unwrap();
         let font_pos = out.html.find("data-html2reel-fonts").unwrap();
         let hud_pos = out.html.find("data-html2reel-hud").unwrap();
+        let turbo_pos = out.html.find("data-html2reel-turbo").unwrap();
         let user_script_pos = out.html.find("<script>console.log(1)</script>").unwrap();
         assert!(font_pos < user_script_pos);
         assert!(hud_pos < user_script_pos);
+        assert!(turbo_pos < user_script_pos);
         assert!(shim_pos < user_script_pos);
         assert!(out.html.contains("NotoSansDevanagari.ttf"));
         assert!(out.html.contains("const EXPORT_MODE = true;"));
+        assert!(out.html.contains("backdrop-filter: none"));
         assert!(out.html.contains("tryAutoStartOverlay"));
         assert!(out.html.contains("#start-overlay"));
         assert!(out.html.contains("checkHasSmilSvg"));
@@ -876,6 +913,7 @@ mod tests {
             &PreprocessOptions {
                 export_mode: false,
                 auto_hide_hud: false,
+                simplify_heavy_effects: true,
                 inject_offline_fonts: false,
                 font_base_url: String::new(),
             },
@@ -883,6 +921,7 @@ mod tests {
         assert_eq!(out.metadata.width, Some(1920));
         assert_eq!(out.metadata.height, Some(1080));
         assert!(!out.html.contains("data-html2reel-hud"));
+        assert!(!out.html.contains("data-html2reel-turbo"));
         assert!(out.html.contains("window.__HTML2REEL__"));
     }
 }

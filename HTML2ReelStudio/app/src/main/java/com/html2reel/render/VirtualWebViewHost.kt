@@ -53,7 +53,8 @@ class VirtualWebViewHost(
     private val width: Int,
     private val height: Int,
     private val preprocessedHtml: String,
-    private val oesSurface: Surface?
+    private val oesSurface: Surface?,
+    private val autoFitFixedViewport: Boolean = false
 ) {
     private var virtualDisplay: VirtualDisplay? = null
     private var presentation: OffscreenPresentation? = null
@@ -66,6 +67,7 @@ class VirtualWebViewHost(
 
     private val fallbackBitmaps = arrayOfNulls<Bitmap>(2)
     private val fallbackCanvases = arrayOfNulls<Canvas>(2)
+    private val fallbackInitialized = booleanArrayOf(false, false)
 
     var softwareRafAlive: Boolean = true
         private set
@@ -206,6 +208,7 @@ class VirtualWebViewHost(
         destroyWebViewOnly()
         pageLoaded = CompletableDeferred()
         fontsReady = CompletableDeferred()
+        fallbackInitialized.fill(false)
 
         val pres = presentation
         val wv = createConfiguredWebView(pres?.context ?: appContext, softwareLayer = true)
@@ -223,6 +226,7 @@ class VirtualWebViewHost(
         destroyWebViewOnly()
         pageLoaded = CompletableDeferred()
         fontsReady = CompletableDeferred()
+        fallbackInitialized.fill(false)
 
         val pres = presentation
         val wv = createConfiguredWebView(pres?.context ?: appContext, softwareLayer = softwareLayer)
@@ -249,6 +253,9 @@ class VirtualWebViewHost(
         wv.loadUrl(PROJECT_INDEX_URL)
         withTimeout(15_000L) {
             pageLoaded.await()
+        }
+        if (autoFitFixedViewport) {
+            wv.evaluateJavascript(FIT_FIXED_STAGE_JS, null)
         }
         wv.evaluateJavascript("window.__HTML2REEL__ && window.__HTML2REEL__.waitUntilReady(0);", null)
         runCatching {
@@ -289,17 +296,17 @@ class VirtualWebViewHost(
         }
     }
 
-    suspend fun awaitUiFrame() {
-        val posted = CompletableDeferred<Unit>()
-        withContext(Dispatchers.Main) {
-            Choreographer.getInstance().postFrameCallback { posted.complete(Unit) }
-        }
-        withTimeoutOrNull(35L) { posted.await() }
-    }
-
     suspend fun capturePixelCopyBitmap(bufferIndex: Int = 0): Bitmap? {
-        invalidateWebView()
-        awaitUiFrame()
+        val framePosted = CompletableDeferred<Unit>()
+        withContext(Dispatchers.Main) {
+            webView?.let { wv ->
+                wv.invalidate()
+                wv.postInvalidateOnAnimation()
+            }
+            Choreographer.getInstance().postFrameCallback { framePosted.complete(Unit) }
+        }
+        withTimeoutOrNull(20L) { framePosted.await() }
+
         val slot = bufferIndex and 1
         val resultDeferred = CompletableDeferred<Int>()
         val bmp = withContext<Bitmap?>(Dispatchers.Main) {
@@ -347,7 +354,10 @@ class VirtualWebViewHost(
         if (wv.width != width || wv.height != height) {
             layoutWebViewExact(wv)
         }
-        bmp.eraseColor(Color.BLACK)
+        if (!fallbackInitialized[slot]) {
+            bmp.eraseColor(Color.BLACK)
+            fallbackInitialized[slot] = true
+        }
         wv.draw(canvas)
         bmp
     }
@@ -358,6 +368,7 @@ class VirtualWebViewHost(
             val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             fallbackBitmaps[slot] = bmp
             fallbackCanvases[slot] = Canvas(bmp)
+            fallbackInitialized[slot] = false
         }
     }
 
@@ -459,6 +470,7 @@ class VirtualWebViewHost(
             runCatching { fallbackBitmaps[idx]?.recycle() }
             fallbackBitmaps[idx] = null
             fallbackCanvases[idx] = null
+            fallbackInitialized[idx] = false
         }
     }
 
@@ -467,5 +479,29 @@ class VirtualWebViewHost(
         const val ASSET_DOMAIN = "appassets.androidplatform.net"
         const val PROJECT_INDEX_URL = "https://$ASSET_DOMAIN/project/index.html"
         const val FONT_BASE_URL = "https://$ASSET_DOMAIN/assets/fonts/"
+
+        private val FIT_FIXED_STAGE_JS = """
+            (function() {
+              var doc = document.documentElement;
+              var body = document.body;
+              if (!doc) return;
+              doc.style.transform = '';
+              doc.style.width = '';
+              doc.style.height = '';
+              var vw = window.innerWidth || doc.clientWidth || 1;
+              var vh = window.innerHeight || doc.clientHeight || 1;
+              var w = Math.max(doc.scrollWidth || 0, body ? (body.scrollWidth || 0) : 0);
+              var h = Math.max(doc.scrollHeight || 0, body ? (body.scrollHeight || 0) : 0);
+              if (w > vw + 2 || h > vh + 2) {
+                var s = Math.min(vw / w, vh / h);
+                doc.style.transformOrigin = '0 0';
+                doc.style.transform = 'scale(' + s + ')';
+                doc.style.width = w + 'px';
+                doc.style.height = h + 'px';
+                doc.style.overflow = 'hidden';
+                if (body) body.style.overflow = 'hidden';
+              }
+            })();
+        """.trimIndent()
     }
 }

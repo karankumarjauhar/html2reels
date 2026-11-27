@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import com.html2reel.model.AspectPreset
 import com.html2reel.model.AudioConfig
 import com.html2reel.model.RenderConfig
+import com.html2reel.model.RenderSpeedMode
 import com.html2reel.ui.components.HtmlPreviewPlayer
 import com.html2reel.ui.theme.StudioBg
 import com.html2reel.ui.theme.StudioBorder
@@ -212,8 +213,34 @@ fun StudioScreen(
                                 )
                             }
                         }
+                        Text("Export Speed & Quality", style = MaterialTheme.typography.labelMedium)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RenderSpeedMode.entries.forEach { mode ->
+                                FilterChip(
+                                    selected = config.speedMode == mode,
+                                    onClick = { onConfigChange { it.copy(speedMode = mode) } },
+                                    label = { Text(mode.label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = StudioIndigo,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                )
+                            }
+                        }
+                        val renderW = config.internalRenderWidth()
+                        val renderH = config.internalRenderHeight()
+                        val speedCaption = if (renderW != config.preset.width || renderH != config.preset.height) {
+                            "WebView renders ${renderW}×$renderH → GPU upscales to ${config.preset.width}×${config.preset.height} · ${config.speedMode.summary}"
+                        } else {
+                            "Native ${config.preset.width}×${config.preset.height} · ${config.speedMode.summary}"
+                        }
                         Text(
-                            text = "Tip: 720×1280 or 24 fps exports up to 2.5× faster on mobile devices.",
+                            text = "$speedCaption (Use 24 fps for max speed)",
                             style = MaterialTheme.typography.labelMedium,
                             color = StudioTextMuted
                         )

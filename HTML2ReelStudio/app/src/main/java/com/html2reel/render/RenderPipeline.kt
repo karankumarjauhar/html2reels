@@ -70,6 +70,7 @@ class RenderPipeline(
                     rawHtml = config.rawHtml,
                     exportMode = true,
                     autoHideHud = config.autoHideHud,
+                    simplifyHeavyEffects = config.speedMode.simplifyHeavyEffects,
                     fontBaseUrl = VirtualWebViewHost.FONT_BASE_URL
                 )
             }
@@ -98,11 +99,16 @@ class RenderPipeline(
             currentCoroutineContext().ensureActive()
             if (cancelled.get()) throw CancellationException("Cancelled before render start")
 
+            val outWidth = config.preset.width
+            val outHeight = config.preset.height
+            val renderWidth = config.internalRenderWidth()
+            val renderHeight = config.internalRenderHeight()
+
             // 3. Open Fast-Start Rust MP4 Muxer
             val activeMuxer = rustCore.createMuxerSession(
                 outputPath = outputFile.absolutePath,
-                width = config.preset.width,
-                height = config.preset.height,
+                width = outWidth,
+                height = outHeight,
                 fps = config.fps,
                 hasAudio = hasAudio,
                 audioSampleRate = 48_000,
@@ -115,8 +121,8 @@ class RenderPipeline(
             val glHandler = Handler(thread.looper)
 
             val vEnc = VideoEncoder(
-                width = config.preset.width,
-                height = config.preset.height,
+                width = outWidth,
+                height = outHeight,
                 fps = config.fps,
                 bitrateBps = config.bitrateBps
             )
@@ -125,19 +131,22 @@ class RenderPipeline(
             val glBlitter = runOnHandler(glHandler) {
                 EglSurfaceBlitter(
                     codecInputSurface = vEnc.inputSurface,
-                    width = config.preset.width,
-                    height = config.preset.height
+                    width = outWidth,
+                    height = outHeight,
+                    inputWidth = renderWidth,
+                    inputHeight = renderHeight
                 )
             }
             blitter = glBlitter
 
-            // 5. Initialize VirtualWebViewHost at exact output pixel dimensions and verify capture path
+            // 5. Initialize VirtualWebViewHost at configured internal render scale and verify capture path
             val host = VirtualWebViewHost(
                 appContext = context.applicationContext,
-                width = config.preset.width,
-                height = config.preset.height,
+                width = renderWidth,
+                height = renderHeight,
                 preprocessedHtml = preprocessed.html,
-                oesSurface = glBlitter.inputSurface
+                oesSurface = glBlitter.inputSurface,
+                autoFitFixedViewport = (renderWidth != outWidth || renderHeight != outHeight)
             )
             webHost = host
             val presentationAvailable = host.initialize()
@@ -162,12 +171,12 @@ class RenderPipeline(
                     )
                     val (loopBarrierMs, loopRafCount) = when (activeMode) {
                         CaptureMode.OES_TEXTURE -> 18 to 1
-                        CaptureMode.PIXEL_COPY -> 24 to 1
-                        CaptureMode.SOFTWARE_BITMAP -> if (host.softwareRafAlive) 20 to 1 else 4 to 0
+                        CaptureMode.PIXEL_COPY -> 18 to 1
+                        CaptureMode.SOFTWARE_BITMAP -> if (host.softwareRafAlive) 18 to 1 else 0 to 0
                     }
                     Log.i(
                         TAG,
-                        "Starting deterministic loop ($totalFrames frames @ ${fps}fps, mode=$activeMode, stepMs=$stepMs, barrier=${loopBarrierMs}ms/${loopRafCount}rAF)"
+                        "Starting deterministic loop ($totalFrames frames @ ${fps}fps, mode=$activeMode, render=${renderWidth}x$renderHeight -> ${outWidth}x$outHeight, stepMs=$stepMs, barrier=${loopBarrierMs}ms/${loopRafCount}rAF)"
                     )
 
                     for (frame in 0 until totalFrames) {
@@ -183,8 +192,10 @@ class RenderPipeline(
                         host.seekAndWaitForSettle(tSec, frame, stepMs, loopBarrierMs, loopRafCount)
 
                         if (activeMode == CaptureMode.OES_TEXTURE) {
-                            host.invalidateWebView()
-                            glBlitter.awaitNewOesFrame(prevOesSeq, 45L)
+                            if (!glBlitter.awaitNewOesFrame(prevOesSeq, 18L)) {
+                                host.invalidateWebView()
+                                glBlitter.awaitNewOesFrame(prevOesSeq, 22L)
+                            }
                             pendingGlDeferred?.let { prev ->
                                 latestThumb = awaitAndReportProgress(
                                     prev, pendingFrameIdx, totalFrames, startMs, activeMode, latestThumb, onProgress
@@ -349,11 +360,11 @@ class RenderPipeline(
             return CaptureMode.SOFTWARE_BITMAP
         }
 
-        // Probe frame t = 0.0 on VirtualDisplay OES first.
+        // Probe frame t = 0.0 on VirtualDisplay OES first (allow cold compositor warmup).
         val seqBefore0 = glBlitter.currentOesSeq()
         host.seekAndWaitForSettle(0.0, -100)
         host.invalidateWebView()
-        glBlitter.awaitNewOesFrame(seqBefore0, 220L)
+        glBlitter.awaitNewOesFrame(seqBefore0, 550L)
 
         val oesThumb0 = runOnHandler(glHandler) { glBlitter.peekOesThumbnail() }
         val oesOk0 = oesThumb0 != null && EglSurfaceBlitter.hasVisibleContent(oesThumb0)
@@ -374,7 +385,7 @@ class RenderPipeline(
         val seqMid = glBlitter.currentOesSeq()
         host.seekAndWaitForSettle(midT, -101)
         host.invalidateWebView()
-        glBlitter.awaitNewOesFrame(seqMid, 220L)
+        glBlitter.awaitNewOesFrame(seqMid, 450L)
 
         val oesThumbMid = runOnHandler(glHandler) { glBlitter.peekOesThumbnail() }
         val oesOkMid = oesThumbMid != null && EglSurfaceBlitter.hasVisibleContent(oesThumbMid)

@@ -33,6 +33,17 @@ data class AudioConfig(
         get() = !voiceoverUri.isNullOrBlank() || !bgmUri.isNullOrBlank()
 }
 
+enum class RenderSpeedMode(
+    val label: String,
+    val summary: String,
+    val renderScale: Float,
+    val simplifyHeavyEffects: Boolean
+) {
+    TURBO("Turbo (67%)", "67% render + GPU HD upscale + light FX", 2f / 3f, true),
+    FAST("Fast (75%)", "75% render + GPU HD upscale + light FX", 0.75f, true),
+    EXACT("Original (100%)", "Native 1:1 pixels + all CSS filters", 1.0f, false)
+}
+
 data class RenderConfig(
     val projectId: String,
     val projectTitle: String,
@@ -42,6 +53,7 @@ data class RenderConfig(
     val durationSec: Float = 10f,
     val bitrateMbps: Int = 10,
     val autoHideHud: Boolean = true,
+    val speedMode: RenderSpeedMode = RenderSpeedMode.FAST,
     val audio: AudioConfig = AudioConfig()
 ) {
     val totalFrames: Int
@@ -49,6 +61,16 @@ data class RenderConfig(
 
     val bitrateBps: Int
         get() = bitrateMbps.coerceIn(6, 16) * 1_000_000
+
+    fun internalRenderWidth(): Int = scaleEvenDimension(preset.width, speedMode.renderScale)
+
+    fun internalRenderHeight(): Int = scaleEvenDimension(preset.height, speedMode.renderScale)
+
+    private fun scaleEvenDimension(target: Int, scale: Float): Int {
+        if (scale >= 0.99f) return target
+        val scaled = (target * scale).roundToInt().coerceAtLeast(360)
+        return scaled and 1.inv()
+    }
 }
 
 data class RecentProject(
