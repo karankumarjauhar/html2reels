@@ -76,8 +76,8 @@ class RenderPipeline(
 
             // 2. Decode, resample (48kHz stereo), mix & duck audio via Rust if configured
             val hasAudio = config.audio.hasAnyTrack
-            if (hasAudio) {
-                audioSession = withContext(Dispatchers.IO) {
+            val activeAudioSession = if (hasAudio) {
+                withContext(Dispatchers.IO) {
                     val voiceFile = config.audio.voiceoverUri?.let {
                         UriFileHelper.stageUriToCache(context, it, "vo").also { f -> stagedFiles.add(f) }
                     }
@@ -90,14 +90,16 @@ class RenderPipeline(
                         audio = config.audio,
                         durationSec = config.durationSec.toDouble()
                     )
-                }
+                }.also { audioSession = it }
+            } else {
+                null
             }
 
             currentCoroutineContext().ensureActive()
             if (cancelled.get()) throw CancellationException("Cancelled before render start")
 
             // 3. Open Fast-Start Rust MP4 Muxer
-            muxer = rustCore.createMuxerSession(
+            val activeMuxer = rustCore.createMuxerSession(
                 outputPath = outputFile.absolutePath,
                 width = config.preset.width,
                 height = config.preset.height,
@@ -105,7 +107,7 @@ class RenderPipeline(
                 hasAudio = hasAudio,
                 audioSampleRate = 48_000,
                 audioChannels = 2
-            )
+            ).also { muxer = it }
 
             // 4. Initialize VideoEncoder & thread-affine EglSurfaceBlitter on dedicated GL thread
             val thread = HandlerThread("HTML2Reel-GL").apply { start() }
@@ -140,6 +142,8 @@ class RenderPipeline(
             webHost = host
             val presentationAvailable = host.initialize()
 
+            val totalFrames = config.totalFrames
+            val fps = config.fps
             var latestThumb: Bitmap? = null
 
             // 6. Step frame = 0 .. totalFrames - 1 deterministically off Main thread
@@ -152,10 +156,8 @@ class RenderPipeline(
                     presentationAvailable = presentationAvailable,
                     durationSec = config.durationSec.toDouble()
                 )
-                Log.i(TAG, "Starting deterministic frame loop (${config.totalFrames} frames, mode=$activeMode)")
+                Log.i(TAG, "Starting deterministic frame loop ($totalFrames frames, mode=$activeMode)")
 
-                val totalFrames = config.totalFrames
-                val fps = config.fps
                 for (frame in 0 until totalFrames) {
                     currentCoroutineContext().ensureActive()
                     if (cancelled.get()) throw CancellationException("Render cancelled by user")
@@ -170,7 +172,7 @@ class RenderPipeline(
                         glBlitter = glBlitter,
                         glHandler = glHandler,
                         vEnc = vEnc,
-                        muxer = muxer,
+                        muxer = activeMuxer,
                         tSec = tSec,
                         ptsNs = ptsNs,
                         seq = frame,
@@ -198,12 +200,12 @@ class RenderPipeline(
 
                 // 7. Flush VideoEncoder EOS
                 runOnHandler(glHandler) {
-                    vEnc.drain(endOfStream = true, muxer = muxer)
+                    vEnc.drain(endOfStream = true, muxer = activeMuxer)
                 }
             }
 
             // 8. Hardware AAC encode mixed audio stream if present
-            if (hasAudio && audioSession != null) {
+            if (hasAudio && activeAudioSession != null) {
                 onProgress(
                     RenderState.Rendering(
                         currentFrame = totalFrames,
@@ -211,13 +213,13 @@ class RenderPipeline(
                         elapsedMs = System.currentTimeMillis() - startMs,
                         etaMs = 500L,
                         phaseLabel = "Encoding AAC audio...",
-                        previewThumbnail = null
+                        previewThumbnail = latestThumb
                     )
                 )
                 val aEnc = AudioEncoder(sampleRate = 48_000, channels = 2, bitrate = 192_000)
                 audioEncoder = aEnc
                 withContext(Dispatchers.IO) {
-                    aEnc.encodeSession(audioSession, muxer) { cancelled.get() }
+                    aEnc.encodeSession(activeAudioSession, activeMuxer) { cancelled.get() }
                 }
             }
 
@@ -229,10 +231,10 @@ class RenderPipeline(
                     elapsedMs = System.currentTimeMillis() - startMs,
                     etaMs = 0L,
                     phaseLabel = "Writing fast-start MP4...",
-                    previewThumbnail = null
+                    previewThumbnail = latestThumb
                 )
             )
-            val summary = withContext(Dispatchers.IO) { muxer.finish() }
+            val summary = withContext(Dispatchers.IO) { activeMuxer.finish() }
             return RenderState.Completed(
                 outputPath = summary.outputPath,
                 durationMs = summary.durationMs.toLong(),
@@ -246,23 +248,26 @@ class RenderPipeline(
             return RenderState.Cancelled
         } catch (t: Throwable) {
             // Partial Output Recovery if at least 1 frame was already written to mdat.
-            if (muxedFrames > 0 && muxer != null && !cancelled.get()) {
+            val recoverableMuxer = muxer
+            val recoverableAudio = audioSession
+            val recoverableEncoder = videoEncoder
+            if (muxedFrames > 0 && recoverableMuxer != null && !cancelled.get()) {
                 val partialSummary = runCatching {
                     val thread = glThread
-                    if (thread != null && thread.isAlive && videoEncoder != null) {
+                    if (thread != null && thread.isAlive && recoverableEncoder != null) {
                         runOnHandler(Handler(thread.looper)) {
-                            videoEncoder!!.drain(endOfStream = true, muxer = muxer)
+                            recoverableEncoder.drain(endOfStream = true, muxer = recoverableMuxer)
                         }
                     }
-                    if (audioSession != null) {
+                    if (recoverableAudio != null) {
                         val partialAudioSamples = ((muxedFrames.toLong() * 48_000L) / config.fps.toLong())
                         val aEnc = AudioEncoder(sampleRate = 48_000, channels = 2)
                         audioEncoder = aEnc
                         withContext(Dispatchers.IO) {
-                            aEnc.encodeSession(audioSession, muxer, partialAudioSamples) { false }
+                            aEnc.encodeSession(recoverableAudio, recoverableMuxer, partialAudioSamples) { false }
                         }
                     }
-                    withContext(Dispatchers.IO) { muxer.finish() }
+                    withContext(Dispatchers.IO) { recoverableMuxer.finish() }
                 }.getOrNull()
 
                 if (partialSummary != null) {

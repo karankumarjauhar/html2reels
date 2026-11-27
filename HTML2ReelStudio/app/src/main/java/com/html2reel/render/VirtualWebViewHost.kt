@@ -277,7 +277,7 @@ class VirtualWebViewHost(
         invalidateWebView()
         awaitUiFrame()
         val resultDeferred = CompletableDeferred<Int>()
-        val bmp = withContext(Dispatchers.Main) {
+        val bmp = withContext<Bitmap?>(Dispatchers.Main) {
             val win = presentation?.window ?: return@withContext null
             val decor = win.decorView
             if (!decor.isAttachedToWindow || decor.width <= 0 || decor.height <= 0) {
@@ -291,8 +291,11 @@ class VirtualWebViewHost(
                 pixelCopyThread = it
                 Handler(it.looper).also { h -> pixelCopyHandler = h }
             }
+            val listener = PixelCopy.OnPixelCopyFinishedListener { code ->
+                resultDeferred.complete(code)
+            }
             val started = runCatching {
-                PixelCopy.request(win, target, { code -> resultDeferred.complete(code) }, handler)
+                PixelCopy.request(win, target, listener, handler)
             }
             if (started.isFailure) {
                 Log.w(TAG, "PixelCopy.request threw: ${started.exceptionOrNull()?.message}")
