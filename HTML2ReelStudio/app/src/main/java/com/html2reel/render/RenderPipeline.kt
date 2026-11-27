@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import com.html2reel.bridge.RustCoreRepository
 import com.html2reel.data.UriFileHelper
 import com.html2reel.model.RenderConfig
@@ -11,6 +12,7 @@ import com.html2reel.model.RenderState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -127,7 +129,7 @@ class RenderPipeline(
             }
             blitter = glBlitter
 
-            // 5. Initialize VirtualWebViewHost at exact output pixel dimensions
+            // 5. Initialize VirtualWebViewHost at exact output pixel dimensions and verify capture path
             val host = VirtualWebViewHost(
                 appContext = context.applicationContext,
                 width = config.preset.width,
@@ -136,57 +138,68 @@ class RenderPipeline(
                 oesSurface = glBlitter.inputSurface
             )
             webHost = host
-            val useOesMode = host.initialize()
+            val presentationAvailable = host.initialize()
 
-            // 6. Step frame = 0 .. totalFrames - 1 deterministically
-            val totalFrames = config.totalFrames
-            val fps = config.fps
-            for (frame in 0 until totalFrames) {
-                currentCoroutineContext().ensureActive()
-                if (cancelled.get()) throw CancellationException("Render cancelled by user")
+            var latestThumb: Bitmap? = null
 
-                val tSec = frame.toDouble() / fps.toDouble()
-                val ptsNs = (frame.toLong() * 1_000_000_000L) / fps.toLong()
-                val captureThumb = (frame == 0 || frame % 12 == 0 || frame == totalFrames - 1)
-
-                val prevOesSeq = glBlitter.currentOesSeq()
-                host.seekAndWaitForSettle(tSec, frame)
-
-                val thumb: Bitmap? = if (useOesMode) {
-                    glBlitter.awaitNewOesFrame(prevOesSeq, 45L)
-                    runOnHandler(glHandler) {
-                        val bmp = glBlitter.drawOesFrame(ptsNs, captureThumb)
-                        vEnc.drain(endOfStream = false, muxer = muxer)
-                        bmp
-                    }
-                } else {
-                    val frameBmp = host.drawFallbackBitmap()
-                    runOnHandler(glHandler) {
-                        val bmp = glBlitter.drawBitmapFrame(frameBmp, ptsNs, captureThumb)
-                        vEnc.drain(endOfStream = false, muxer = muxer)
-                        bmp
-                    }
-                }
-                muxedFrames = frame + 1
-
-                val elapsed = System.currentTimeMillis() - startMs
-                val avgPerFrame = elapsed.toDouble() / muxedFrames.toDouble()
-                val eta = ((totalFrames - muxedFrames) * avgPerFrame).toLong().coerceAtLeast(0L)
-                onProgress(
-                    RenderState.Rendering(
-                        currentFrame = muxedFrames,
-                        totalFrames = totalFrames,
-                        elapsedMs = elapsed,
-                        etaMs = eta,
-                        phaseLabel = "Rendering frames",
-                        previewThumbnail = thumb
-                    )
+            // 6. Step frame = 0 .. totalFrames - 1 deterministically off Main thread
+            //    so Choreographer/ViewRootImpl on Main thread never stalls waiting on OES fences.
+            withContext(Dispatchers.Default) {
+                val activeMode = resolveCaptureMode(
+                    host = host,
+                    glBlitter = glBlitter,
+                    glHandler = glHandler,
+                    presentationAvailable = presentationAvailable,
+                    durationSec = config.durationSec.toDouble()
                 )
-            }
+                Log.i(TAG, "Starting deterministic frame loop (${config.totalFrames} frames, mode=$activeMode)")
 
-            // 7. Flush VideoEncoder EOS
-            runOnHandler(glHandler) {
-                vEnc.drain(endOfStream = true, muxer = muxer)
+                val totalFrames = config.totalFrames
+                val fps = config.fps
+                for (frame in 0 until totalFrames) {
+                    currentCoroutineContext().ensureActive()
+                    if (cancelled.get()) throw CancellationException("Render cancelled by user")
+
+                    val tSec = frame.toDouble() / fps.toDouble()
+                    val ptsNs = (frame.toLong() * 1_000_000_000L) / fps.toLong()
+                    val captureThumb = (frame == 0 || frame % 12 == 0 || frame == totalFrames - 1)
+
+                    val thumb: Bitmap? = renderSingleFrame(
+                        mode = activeMode,
+                        host = host,
+                        glBlitter = glBlitter,
+                        glHandler = glHandler,
+                        vEnc = vEnc,
+                        muxer = muxer,
+                        tSec = tSec,
+                        ptsNs = ptsNs,
+                        seq = frame,
+                        captureThumb = captureThumb
+                    )
+                    if (thumb != null && !thumb.isRecycled) {
+                        latestThumb = thumb
+                    }
+                    muxedFrames = frame + 1
+
+                    val elapsed = System.currentTimeMillis() - startMs
+                    val avgPerFrame = elapsed.toDouble() / muxedFrames.toDouble()
+                    val eta = ((totalFrames - muxedFrames) * avgPerFrame).toLong().coerceAtLeast(0L)
+                    onProgress(
+                        RenderState.Rendering(
+                            currentFrame = muxedFrames,
+                            totalFrames = totalFrames,
+                            elapsedMs = elapsed,
+                            etaMs = eta,
+                            phaseLabel = "Rendering frames",
+                            previewThumbnail = latestThumb
+                        )
+                    )
+                }
+
+                // 7. Flush VideoEncoder EOS
+                runOnHandler(glHandler) {
+                    vEnc.drain(endOfStream = true, muxer = muxer)
+                }
             }
 
             // 8. Hardware AAC encode mixed audio stream if present
@@ -267,21 +280,127 @@ class RenderPipeline(
             runCatching { outputFile.delete() }
             return RenderState.Failed(message = t.message ?: "Unknown rendering failure")
         } finally {
-            runCatching { webHost?.release() }
-            val thread = glThread
-            if (thread != null && thread.isAlive) {
-                runCatching {
-                    runOnHandler(Handler(thread.looper)) {
-                        blitter?.release()
+            withContext(NonCancellable) {
+                runCatching { webHost?.release() }
+                val thread = glThread
+                if (thread != null && thread.isAlive) {
+                    runCatching {
+                        runOnHandler(Handler(thread.looper)) {
+                            blitter?.release()
+                        }
                     }
+                    thread.quitSafely()
+                } else {
+                    runCatching { blitter?.release() }
                 }
-                thread.quitSafely()
-            } else {
-                runCatching { blitter?.release() }
+                runCatching { videoEncoder?.release() }
+                runCatching { audioEncoder?.release() }
+                stagedFiles.forEach { runCatching { it.delete() } }
             }
-            runCatching { videoEncoder?.release() }
-            runCatching { audioEncoder?.release() }
-            stagedFiles.forEach { runCatching { it.delete() } }
+        }
+    }
+
+    private suspend fun resolveCaptureMode(
+        host: VirtualWebViewHost,
+        glBlitter: EglSurfaceBlitter,
+        glHandler: Handler,
+        presentationAvailable: Boolean,
+        durationSec: Double
+    ): CaptureMode {
+        if (!presentationAvailable) {
+            return CaptureMode.SOFTWARE_BITMAP
+        }
+
+        // Probe frame t = 0.0 on VirtualDisplay OES first.
+        val seqBefore0 = glBlitter.currentOesSeq()
+        host.seekAndWaitForSettle(0.0, -100)
+        host.invalidateWebView()
+        glBlitter.awaitNewOesFrame(seqBefore0, 220L)
+
+        val oesThumb0 = runOnHandler(glHandler) { glBlitter.peekOesThumbnail() }
+        val oesOk0 = oesThumb0 != null && EglSurfaceBlitter.hasVisibleContent(oesThumb0)
+        oesThumb0?.recycle()
+        if (oesOk0 && glBlitter.currentOesSeq() > 0) {
+            return CaptureMode.OES_TEXTURE
+        }
+
+        // OES was black/missing at t = 0: check Presentation Window via PixelCopy directly.
+        val pc0 = host.capturePixelCopyBitmap()
+        if (pc0 != null && EglSurfaceBlitter.hasVisibleContent(pc0)) {
+            Log.w(TAG, "OES VirtualDisplay produced black at t=0; switching to PixelCopy")
+            return CaptureMode.PIXEL_COPY
+        }
+
+        // Both OES and PixelCopy are black at t=0 (either genuine black intro or broken HW Presentation).
+        val midT = (durationSec * 0.25).coerceIn(0.2, 3.0)
+        val seqMid = glBlitter.currentOesSeq()
+        host.seekAndWaitForSettle(midT, -101)
+        host.invalidateWebView()
+        glBlitter.awaitNewOesFrame(seqMid, 220L)
+
+        val oesThumbMid = runOnHandler(glHandler) { glBlitter.peekOesThumbnail() }
+        val oesOkMid = oesThumbMid != null && EglSurfaceBlitter.hasVisibleContent(oesThumbMid)
+        oesThumbMid?.recycle()
+        if (oesOkMid && glBlitter.currentOesSeq() > 0) {
+            host.reloadCleanFromStart(softwareLayer = false)
+            return CaptureMode.OES_TEXTURE
+        }
+
+        val pcMid = host.capturePixelCopyBitmap()
+        if (pcMid != null && EglSurfaceBlitter.hasVisibleContent(pcMid)) {
+            Log.w(TAG, "OES VirtualDisplay produced black at midT; switching to PixelCopy")
+            host.reloadCleanFromStart(softwareLayer = false)
+            return CaptureMode.PIXEL_COPY
+        }
+
+        Log.w(TAG, "HW Presentation & PixelCopy both yielded black; switching to LAYER_TYPE_SOFTWARE")
+        host.switchToSoftwareFallback()
+        return CaptureMode.SOFTWARE_BITMAP
+    }
+
+    private suspend fun renderSingleFrame(
+        mode: CaptureMode,
+        host: VirtualWebViewHost,
+        glBlitter: EglSurfaceBlitter,
+        glHandler: Handler,
+        vEnc: VideoEncoder,
+        muxer: Mp4MuxerSession,
+        tSec: Double,
+        ptsNs: Long,
+        seq: Int,
+        captureThumb: Boolean
+    ): Bitmap? {
+        val prevOesSeq = glBlitter.currentOesSeq()
+        host.seekAndWaitForSettle(tSec, seq)
+
+        return when (mode) {
+            CaptureMode.OES_TEXTURE -> {
+                host.invalidateWebView()
+                glBlitter.awaitNewOesFrame(prevOesSeq, 45L)
+                runOnHandler(glHandler) {
+                    val bmp = glBlitter.drawOesFrame(ptsNs, captureThumb)
+                    vEnc.drain(endOfStream = false, muxer = muxer)
+                    bmp
+                }
+            }
+
+            CaptureMode.PIXEL_COPY -> {
+                val frameBmp = host.capturePixelCopyBitmap() ?: host.drawFallbackBitmap()
+                runOnHandler(glHandler) {
+                    val bmp = glBlitter.drawBitmapFrame(frameBmp, ptsNs, captureThumb)
+                    vEnc.drain(endOfStream = false, muxer = muxer)
+                    bmp
+                }
+            }
+
+            CaptureMode.SOFTWARE_BITMAP -> {
+                val frameBmp = host.drawFallbackBitmap()
+                runOnHandler(glHandler) {
+                    val bmp = glBlitter.drawBitmapFrame(frameBmp, ptsNs, captureThumb)
+                    vEnc.drain(endOfStream = false, muxer = muxer)
+                    bmp
+                }
+            }
         }
     }
 
@@ -297,5 +416,9 @@ class RenderPipeline(
             throw IllegalStateException("GL HandlerThread is dead")
         }
         return deferred.await()
+    }
+
+    companion object {
+        private const val TAG = "HTML2ReelPipeline"
     }
 }

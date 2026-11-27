@@ -43,7 +43,7 @@ pub fn preprocess_html(raw_html: &str, options: &PreprocessOptions) -> Preproces
     if options.export_mode && options.auto_hide_hud {
         injection.push_str(
             "<style data-html2reel-hud>\
-             .hud, #hud, .controls, #controls, [data-export-hide] { \
+             .hud, #hud, .controls, #controls, .start-overlay, #start-overlay, .play-overlay, #play-overlay, [data-export-hide] { \
              display: none !important; opacity: 0 !important; visibility: hidden !important; pointer-events: none !important; \
              }\
              </style>",
@@ -103,10 +103,17 @@ pub fn extract_metadata(html: &str) -> HtmlMetadata {
         cursor = tag_end;
     }
 
+    if duration_sec.is_none() {
+        duration_sec = extract_duration_from_js(html)
+            .or_else(|| extract_duration_from_title(title.as_deref()));
+    }
+
+    let has_iife = lower.contains("(function") || lower.contains("(()=>{") || lower.contains("() => {");
     let has_explicit_seek_hook = lower.contains("window.seekto")
-        || lower.contains("function seekto")
         || lower.contains("window.renderframe")
-        || lower.contains("function renderframe");
+        || lower.contains("globalthis.seekto")
+        || lower.contains("globalthis.renderframe")
+        || (!has_iife && (lower.contains("function seekto") || lower.contains("function renderframe")));
 
     HtmlMetadata {
         title,
@@ -167,13 +174,228 @@ fn extract_attr(tag: &str, attr_name: &str) -> Option<String> {
 }
 
 fn parse_duration_seconds(raw: &str) -> Option<f64> {
-    let cleaned = raw.trim().trim_end_matches('s').trim();
+    let trimmed = raw.trim();
+    if let Some((m_str, s_str)) = trimmed.split_once(':') {
+        if !m_str.contains(':') && !s_str.contains(':') {
+            let mins = m_str.trim().parse::<u32>().ok()?;
+            let secs = s_str.trim().parse::<f64>().ok()?;
+            if secs >= 0.0 && secs < 60.0 {
+                let total = (mins as f64) * 60.0 + secs;
+                if total.is_finite() && total > 0.0 && total <= 3600.0 {
+                    return Some(total);
+                }
+            }
+            return None;
+        }
+    }
+    let cleaned = trimmed.trim_end_matches('s').trim();
     let secs = cleaned.parse::<f64>().ok()?;
     if secs.is_finite() && secs > 0.0 && secs <= 3600.0 {
         Some(secs)
     } else {
         None
     }
+}
+
+/// Scans `<script>` blocks for common animation duration constants such as
+/// `const DURATION = 60.0`, `totalDuration = 45`, or `DURATION_MS = 60000`.
+fn extract_duration_from_js(html: &str) -> Option<f64> {
+    let lower = html.to_ascii_lowercase();
+    let mut best: Option<(u8, f64)> = None;
+    let mut cursor = 0usize;
+
+    while let Some(rel_open) = lower[cursor..].find("<script") {
+        let open_pos = cursor + rel_open;
+        let Some(rel_gt) = lower[open_pos..].find('>') else {
+            break;
+        };
+        let header = &lower[open_pos..open_pos + rel_gt];
+        let body_start = open_pos + rel_gt + 1;
+        let Some(rel_close) = lower[body_start..].find("</script>") else {
+            break;
+        };
+        let body_end = body_start + rel_close;
+        cursor = body_end + "</script>".len();
+
+        if !header.contains("data-html2reel-shim") {
+            scan_script_for_duration(&lower[body_start..body_end], &mut best);
+        }
+    }
+
+    best.map(|(_, secs)| secs)
+}
+
+fn scan_script_for_duration(script: &str, best: &mut Option<(u8, f64)>) {
+    const SEC_KEYS: &[&str] = &[
+        "total_duration_sec",
+        "total_duration",
+        "video_duration",
+        "reel_duration",
+        "duration_seconds",
+        "duration_sec",
+        "duration_secs",
+        "totaldurationsec",
+        "totalduration",
+        "videoduration",
+        "reelduration",
+        "durationseconds",
+        "durationsec",
+        "durationsecs",
+        "duration",
+    ];
+    const MS_KEYS: &[&str] = &[
+        "total_duration_ms",
+        "video_duration_ms",
+        "duration_ms",
+        "totaldurationms",
+        "videodurationms",
+        "durationms",
+    ];
+
+    for &(is_ms, keys) in &[(false, SEC_KEYS), (true, MS_KEYS)] {
+        for &key in keys {
+            let mut pos = 0usize;
+            while let Some(rel) = script[pos..].find(key) {
+                let idx = pos + rel;
+                let end = idx + key.len();
+                pos = end;
+
+                if let Some((priority, secs)) = try_parse_js_assignment(script, idx, end, key, is_ms) {
+                    if best.map_or(true, |(p, _)| priority < p) {
+                        *best = Some((priority, secs));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn try_parse_js_assignment(
+    script: &str,
+    idx: usize,
+    end: usize,
+    key: &str,
+    is_ms: bool,
+) -> Option<(u8, f64)> {
+    let bytes = script.as_bytes();
+    let prev_ok = idx == 0 || {
+        let b = bytes[idx - 1];
+        !b.is_ascii_alphanumeric() && b != b'_' && b != b'$' && b != b'.'
+    };
+    let next_ok = end >= bytes.len()
+        || (!bytes[end].is_ascii_alphanumeric() && bytes[end] != b'_' && bytes[end] != b'$');
+    if !prev_ok || !next_ok {
+        return None;
+    }
+
+    let line_start = script[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    if script[line_start..idx].trim_start().starts_with("//") {
+        return None;
+    }
+
+    let rest = script[end..].trim_start();
+    if rest.starts_with("==") {
+        return None;
+    }
+    let after_op = rest.strip_prefix('=').or_else(|| rest.strip_prefix(':'))?;
+
+    let val_part = after_op.trim_start();
+    let num_end = val_part
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(val_part.len());
+    if num_end == 0 {
+        return None;
+    }
+    let raw_num = val_part[..num_end].parse::<f64>().ok()?;
+    let trailing = val_part[num_end..].trim_start();
+    if let Some(next_ch) = trailing.chars().next() {
+        if !matches!(next_ch, ';' | ',' | '\n' | '\r' | ')' | '}' | '/') {
+            return None;
+        }
+    }
+
+    let secs = if is_ms { raw_num / 1000.0 } else { raw_num };
+    if !secs.is_finite() || secs < 1.0 || secs > 3600.0 {
+        return None;
+    }
+
+    // Prefer `const`/`let`/`var` top-level duration constants over generic object keys.
+    let prefix = script[line_start..idx].trim_end();
+    let is_decl = ends_with_keyword(prefix, "const")
+        || ends_with_keyword(prefix, "let")
+        || ends_with_keyword(prefix, "var");
+    let priority = match (key == "duration", is_decl) {
+        (false, true) => 0u8,
+        (false, false) => 1u8,
+        (true, true) => 2u8,
+        (true, false) => 3u8,
+    };
+    Some((priority, secs))
+}
+
+fn ends_with_keyword(prefix: &str, keyword: &str) -> bool {
+    let Some(stripped) = prefix.strip_suffix(keyword) else {
+        return false;
+    };
+    stripped
+        .as_bytes()
+        .last()
+        .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_' && *b != b'$')
+}
+
+/// Extracts duration hints from `<title>`, such as `"60s Vertical Story"` or `"45 sec Reel"`.
+fn extract_duration_from_title(title: Option<&str>) -> Option<f64> {
+    let text = title?.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let prev_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+            let mut j = i;
+            let mut seen_dot = false;
+            while j < bytes.len() && (bytes[j].is_ascii_digit() || (!seen_dot && bytes[j] == b'.')) {
+                if bytes[j] == b'.' {
+                    seen_dot = true;
+                }
+                j += 1;
+            }
+            if prev_ok && j > i {
+                let num_str = &text[i..j];
+                let after_ws = text[j..].trim_start();
+                let unit_len = if after_ws.starts_with("seconds") {
+                    Some(7)
+                } else if after_ws.starts_with("second") {
+                    Some(6)
+                } else if after_ws.starts_with("secs") {
+                    Some(4)
+                } else if after_ws.starts_with("sec") {
+                    Some(3)
+                } else if after_ws.starts_with('s') {
+                    Some(1)
+                } else {
+                    None
+                };
+                if let Some(ulen) = unit_len {
+                    let after_unit = &after_ws[ulen..];
+                    let end_ok = after_unit
+                        .chars()
+                        .next()
+                        .map_or(true, |c| !c.is_ascii_alphabetic());
+                    if end_ok {
+                        if let Ok(secs) = num_str.parse::<f64>() {
+                            if secs.is_finite() && secs >= 1.0 && secs <= 3600.0 {
+                                return Some(secs);
+                            }
+                        }
+                    }
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 fn parse_resolution(raw: &str) -> Option<(u32, u32)> {
@@ -398,6 +620,19 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }}
   }}
 
+  let autoStartTriggered = false;
+  function tryAutoStartOverlay() {{
+    if (autoStartTriggered) return;
+    if (typeof window.seekTo === 'function' || typeof window.renderFrame === 'function') return;
+    try {{
+      const el = document.querySelector('#start-overlay, .start-overlay, #play-overlay, .play-overlay, [data-export-start]');
+      if (el) {{
+        autoStartTriggered = true;
+        el.click();
+      }}
+    }} catch (_) {{}}
+  }}
+
   function seekTo(seconds) {{
     const s = Math.max(0, Number(seconds) || 0);
     const targetMs = s * 1000.0;
@@ -415,6 +650,10 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
       window.renderFrame(s);
       syncDomAndSvgTimelines(s, targetMs);
       return;
+    }}
+
+    if (EXPORT_MODE || s > 0) {{
+      tryAutoStartOverlay();
     }}
 
     // Priority 2: step virtual clock monotonically toward targetMs so rAF animations advance cleanly.
@@ -439,6 +678,17 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
     }} catch (_) {{}}
   }}
 
+  function settlePaintBarrier(maxFallbackMs, cb) {{
+    let done = false;
+    const finish = () => {{
+      if (done) return;
+      done = true;
+      cb();
+    }};
+    nativeRAF(() => nativeRAF(finish));
+    nativeSetTimeout(finish, maxFallbackMs);
+  }}
+
   async function waitUntilReady(seq) {{
     try {{
       if (document.fonts && typeof document.fonts.load === 'function') {{
@@ -451,21 +701,24 @@ fn build_clock_shim(export_mode: bool, auto_hide_hud: bool) -> String {
         ]);
       }}
     }} catch (_) {{}}
+    if (EXPORT_MODE) {{
+      tryAutoStartOverlay();
+    }}
     hideHudIfEnabled();
-    nativeRAF(() => nativeRAF(() => {{
+    settlePaintBarrier(120, () => {{
       if (window.__HTML2REEL_BRIDGE__ && typeof window.__HTML2REEL_BRIDGE__.onReady === 'function') {{
         window.__HTML2REEL_BRIDGE__.onReady(seq);
       }}
-    }}));
+    }});
   }}
 
   function seekAndNotify(seconds, seq) {{
     seekTo(seconds);
-    nativeRAF(() => nativeRAF(() => {{
+    settlePaintBarrier(80, () => {{
       if (window.__HTML2REEL_BRIDGE__ && typeof window.__HTML2REEL_BRIDGE__.onFrameSettled === 'function') {{
         window.__HTML2REEL_BRIDGE__.onFrameSettled(seq);
       }}
-    }}));
+    }});
   }}
 
   window.__HTML2REEL__ = {{
@@ -512,6 +765,35 @@ mod tests {
     }
 
     #[test]
+    fn extracts_duration_from_js_constants_and_title_fallback() {
+        let js_html = r#"
+        <html>
+          <head><title>EK PURANI LALTAIN · EK RAAT — 60s Vertical Story</title></head>
+          <body>
+            <script>
+              (function() {
+                const DURATION = 60.0;
+                const FADE = 0.45;
+                function renderFrame(t) {}
+              })();
+            </script>
+          </body>
+        </html>"#;
+        let meta = extract_metadata(js_html);
+        assert_eq!(meta.duration_sec, Some(60.0));
+        assert!(!meta.has_explicit_seek_hook);
+
+        let ms_html = "<html><script>const totalDurationMs = 45000;</script></html>";
+        assert_eq!(extract_metadata(ms_html).duration_sec, Some(45.0));
+
+        let title_only = "<html><head><title>Promo Reel — 35s</title></head><body></body></html>";
+        assert_eq!(extract_metadata(title_only).duration_sec, Some(35.0));
+
+        let subsecond_only = "<html><script>const duration = 0.3;</script></html>";
+        assert_eq!(extract_metadata(subsecond_only).duration_sec, None);
+    }
+
+    #[test]
     fn injects_shim_before_first_script_with_fonts_and_hud_css() {
         let raw = "<html><head><style>body{}</style><script>console.log(1)</script></head></html>";
         let out = preprocess_html(
@@ -532,6 +814,8 @@ mod tests {
         assert!(shim_pos < user_script_pos);
         assert!(out.html.contains("NotoSansDevanagari.ttf"));
         assert!(out.html.contains("const EXPORT_MODE = true;"));
+        assert!(out.html.contains("tryAutoStartOverlay"));
+        assert!(out.html.contains("#start-overlay"));
     }
 
     #[test]

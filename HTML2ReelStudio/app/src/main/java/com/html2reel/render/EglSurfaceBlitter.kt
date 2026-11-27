@@ -44,7 +44,7 @@ class EglSurfaceBlitter(
 
     private val frameCounter = AtomicInteger(0)
     private val frameLock = Object()
-    private var lastObservedSeq = 0
+    private var consumedSeq = 0
     private var hasReceivedFirstOesFrame = false
     private var lastPtsNs = -1L
 
@@ -191,20 +191,36 @@ class EglSurfaceBlitter(
         }
     }
 
+    private fun drainLatestOesFrame(st: SurfaceTexture) {
+        val targetSeq = frameCounter.get()
+        if (targetSeq > consumedSeq) {
+            val steps = (targetSeq - consumedSeq).coerceAtMost(4)
+            repeat(steps) {
+                st.updateTexImage()
+                st.getTransformMatrix(oesMatrix)
+            }
+            consumedSeq = targetSeq
+            hasReceivedFirstOesFrame = true
+        } else if (!hasReceivedFirstOesFrame) {
+            Matrix.setIdentityM(oesMatrix, 0)
+        }
+    }
+
+    /**
+     * Reads back a downscaled thumbnail of the latest OES texture WITHOUT swapping buffers to the encoder.
+     */
+    fun peekOesThumbnail(): Bitmap? {
+        if (released.get()) return null
+        val st = surfaceTexture ?: return null
+        drainLatestOesFrame(st)
+        if (!hasReceivedFirstOesFrame) return null
+        return renderToThumbFbo(oesProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId, oesMatrix)
+    }
+
     fun drawOesFrame(ptsNs: Long, captureThumbnail: Boolean): Bitmap? {
         if (released.get()) return null
         val st = surfaceTexture ?: return null
-        val currentSeq = frameCounter.get()
-        if (currentSeq != lastObservedSeq || !hasReceivedFirstOesFrame) {
-            if (currentSeq > 0) {
-                st.updateTexImage()
-                st.getTransformMatrix(oesMatrix)
-                lastObservedSeq = currentSeq
-                hasReceivedFirstOesFrame = true
-            } else {
-                Matrix.setIdentityM(oesMatrix, 0)
-            }
-        }
+        drainLatestOesFrame(st)
 
         val thumb = if (captureThumbnail) {
             renderToThumbFbo(oesProgram, GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId, oesMatrix)
@@ -363,6 +379,27 @@ class EglSurfaceBlitter(
 
     companion object {
         private const val EGL_RECORDABLE_ANDROID = 0x3142
+
+        /**
+         * Fast sparse-grid pixel check (<0.1ms) returning true when a frame contains non-black pixels.
+         */
+        fun hasVisibleContent(bitmap: Bitmap): Boolean {
+            if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return false
+            val cols = 16
+            val rows = 28
+            for (gy in 0 until rows) {
+                val y = ((gy + 0.5f) / rows * bitmap.height).toInt().coerceIn(0, bitmap.height - 1)
+                for (gx in 0 until cols) {
+                    val x = ((gx + 0.5f) / cols * bitmap.width).toInt().coerceIn(0, bitmap.width - 1)
+                    val px = bitmap.getPixel(x, y)
+                    val r = (px shr 16) and 0xFF
+                    val g = (px shr 8) and 0xFF
+                    val b = px and 0xFF
+                    if (r > 3 || g > 3 || b > 3) return true
+                }
+            }
+            return false
+        }
 
         // Fullscreen quad: (x, y, u, v)
         private val QUAD_COORDS = floatArrayOf(
