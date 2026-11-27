@@ -7,14 +7,13 @@ use std::sync::Mutex;
 use audioadapter_buffers::direct::InterleavedSlice;
 use audioadapter_buffers::owned::InterleavedOwned;
 use rubato::{Fft, FixedSync, Resampler};
-use symphonia::core::audio::Audio;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use crate::StudioError;
 
@@ -240,7 +239,7 @@ pub fn decode_and_resample_to_48k_stereo(path: &Path) -> Result<Vec<f32>, Studio
             }
         };
 
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
 
